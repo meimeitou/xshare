@@ -12,6 +12,7 @@ from xshare.data.provider import (
     RealtimeQuote,
     SectorRank,
     TopMover,
+    detect_asset_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,26 @@ class AkShareProvider(DataProvider):
 
     def get_realtime_quote(self, code: str) -> RealtimeQuote:
         pure_code = code.split(".")[0]
+        if detect_asset_type(code) == "etf":
+            df = ak.fund_etf_spot_em()
+            row = df[df["代码"] == pure_code]
+            if row.empty:
+                raise ValueError(f"未找到ETF: {code}")
+            r = row.iloc[0]
+            return RealtimeQuote(
+                code=code,
+                name=str(r.get("名称", "")),
+                price=float(r.get("最新价", 0)),
+                change_pct=float(r.get("涨跌幅", 0)),
+                change_amount=float(r.get("涨跌额", 0)),
+                volume=int(r.get("成交量", 0)),
+                amount=float(r.get("成交额", 0)),
+                high=float(r.get("最高", 0)),
+                low=float(r.get("最低", 0)),
+                open=float(r.get("今开", 0)),
+                prev_close=float(r.get("昨收", 0)),
+                source=self.name,
+            )
         df = ak.stock_zh_a_spot_em()
         row = df[df["代码"] == pure_code]
         if row.empty:
@@ -55,10 +76,16 @@ class AkShareProvider(DataProvider):
 
     def get_daily_history(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
         pure_code = code.split(".")[0]
-        df = ak.stock_zh_a_hist(
-            symbol=pure_code, period="daily",
-            start_date=start_date, end_date=end_date, adjust="qfq",
-        )
+        if detect_asset_type(code) == "etf":
+            df = ak.fund_etf_hist_em(
+                symbol=pure_code, period="daily",
+                start_date=start_date, end_date=end_date, adjust="qfq",
+            )
+        else:
+            df = ak.stock_zh_a_hist(
+                symbol=pure_code, period="daily",
+                start_date=start_date, end_date=end_date, adjust="qfq",
+            )
         df = df.rename(columns={
             "日期": "trade_date", "开盘": "open", "收盘": "close",
             "最高": "high", "最低": "low", "成交量": "volume",

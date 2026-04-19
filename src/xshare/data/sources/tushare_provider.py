@@ -13,6 +13,7 @@ from xshare.data.provider import (
     MarketStats,
     RealtimeQuote,
     TopMover,
+    detect_asset_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,10 @@ class TushareProvider(DataProvider):
     # ─── 日线历史 ────────────────────────────────────────────
 
     def get_daily_history(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
-        df = self._pro.daily(ts_code=code, start_date=start_date, end_date=end_date)
+        if detect_asset_type(code) == "etf":
+            df = self._pro.fund_daily(ts_code=code, start_date=start_date, end_date=end_date)
+        else:
+            df = self._pro.daily(ts_code=code, start_date=start_date, end_date=end_date)
         if df.empty:
             return df
         df = df.rename(columns={
@@ -96,7 +100,10 @@ class TushareProvider(DataProvider):
 
     def get_realtime_quote(self, code: str) -> RealtimeQuote:
         trade_date = self._latest_trade_date()
-        df = self._pro.daily(ts_code=code, start_date=trade_date, end_date=trade_date)
+        if detect_asset_type(code) == "etf":
+            df = self._pro.fund_daily(ts_code=code, start_date=trade_date, end_date=trade_date)
+        else:
+            df = self._pro.daily(ts_code=code, start_date=trade_date, end_date=trade_date)
         if df.empty:
             raise ValueError(f"Tushare 未找到 {code} 在 {trade_date} 的数据")
         r = df.iloc[0]

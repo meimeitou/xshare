@@ -46,7 +46,7 @@ TOOLS: dict[str, tuple] = {
             "code": {"type": "string", "description": "股票代码"},
             "indicators": {
                 "type": "array",
-                "items": {"type": "string", "enum": ["MA", "EMA", "MACD", "RSI", "KDJ", "BOLL", "ATR"]},
+                "items": {"type": "string", "enum": ["MA", "EMA", "MACD", "RSI", "KDJ", "BOLL", "ATR", "VOL_MA", "OBV", "VWAP", "DMI", "NINE_TURN", "TREND"]},
                 "description": "需要计算的技术指标列表",
             },
             "period": {

@@ -16,6 +16,22 @@ from xshare.data.db import get_conn
 logger = logging.getLogger(__name__)
 
 
+# ─── 资产类型判断 ───────────────────────────────────────────
+
+def detect_asset_type(code: str) -> str:
+    """根据代码判断资产类型: stock / etf / index"""
+    pure = code.split(".")[0]
+    # ETF: 51xxxx(沪), 15xxxx(深), 56xxxx(深)
+    if pure.startswith("51") or pure.startswith("56") or pure.startswith("159"):
+        return "etf"
+    # 指数: 000xxx.SH / 399xxx.SZ 等
+    if pure.startswith("000") and code.endswith(".SH"):
+        return "index"
+    if pure.startswith("399"):
+        return "index"
+    return "stock"
+
+
 # ─── 统一数据类型 ───────────────────────────────────────────
 
 @dataclass

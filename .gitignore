@@ -27,3 +27,9 @@ Thumbs.db
 # Environment variables
 .env
 scripts/portfolio.csv
+
+# Workspace - Dream 自动维护的文件，不提交
+workspace/USER.md
+workspace/memory/*
+workspace/sessions/*
+workspace/cron/*
