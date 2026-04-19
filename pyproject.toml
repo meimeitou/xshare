@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xshare"
+version = "0.1.0"
+description = "股票/基金智能分析助手 - MCP Tools for nanobot"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "duckdb>=1.0.0",
+    "pandas>=2.0.0",
+    "akshare>=1.10.0",
+    "tushare>=1.4.0",
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "mineru-kie-sdk>=0.1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xshare"]
