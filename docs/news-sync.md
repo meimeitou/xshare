@@ -6,75 +6,23 @@ XShare 支持自动同步同花顺 7×24 实时新闻到本地 DuckDB，数据�
 
 同花顺实时新闻 <https://news.10jqka.com.cn/realtimenews.html>
 
-## 方式一：nanobot 内置定时任务（推荐）
+## 方式一：MCP 内置自动同步（推荐）
 
-启动 nanobot 后，在对话中直接告诉 Agent：
+MCP Server 启动时自动初始化数据库并启动后台定时器，默认每 15 分钟同步一次新闻、每 24 小时同步一次股票列表。无需额外配置。
 
-```
-帮我创建一个定时任务，每 10 分钟同步一次同花顺新闻
-```
-
-Agent 会自动调用 `createScheduledTask` 创建 cron 任务，并在每次触发时调用 `sync_news` 工具。
-
-### 管理任务
+通过对话调用 `sync_job` 工具可管理定时任务（热生效，持久化到 DB）：
 
 | 操作 | 对话示例 |
 |------|---------|
-| 查看任务列表 | "列出所有定时任务" |
-| 暂停任务 | "暂停新闻同步任务" |
-| 恢复任务 | "恢复新闻同步任务" |
-| 立即执行一次 | "立即同步一次新闻" |
-| 删除任务 | "删除新闻同步任务" |
+| 查看状态 | "同步状态怎么样" |
+| 修改间隔 | "新闻同步改每 30 分钟" |
+| 暂停任务 | "暂停股票列表同步" |
+| 恢复任务 | "恢复股票列表同步" |
+| 立即执行一次 | "现在同步一次新闻" |
 
-任务执行记录可在 nanobot UI（<http://localhost:8080）中查看。>
+## 操作入口
 
-## 方式二：命令行脚本
-
-### 单次同步
-
-```bash
-uv run python scripts/sync_news.py
-```
-
-### 定时同步（每 10 分钟）
-
-```bash
-uv run python scripts/sync_news.py --interval 10
-```
-
-### 参数说明
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--pages` | 5 | 每次抓取页数 |
-| `--interval` | 0 | 同步间隔（分钟），0 为只执行一次 |
-| `--retain-days` | 1 | 新闻保留天数 |
-
-### 后台运行
-
-```bash
-nohup uv run python scripts/sync_news.py --interval 10 > data/sync_news.log 2>&1 &
-```
-
-### cron 方式
-
-```bash
-# crontab -e
-*/10 * * * * cd ~/workspace/xshare && uv run python scripts/sync_news.py --pages 3 >> data/sync_news.log 2>&1
-```
-
-## MCP 工具
-
-`sync_news` 已注册为 MCP 工具，可在对话中直接调用：
-
-```
-同步一下最新新闻
-```
-
-参数：
-
-- `pages`：抓取页数（1-10，默认 3）
-- `retain_days`：保留天数（默认 1）
+同步全部通过 Web 前端 `/sync` 页面操作（运行 / 启停 / 历史）；API 与 MCP `sync_job` 共用同一队列。后台 timer 在 Web/MCP 服务启动后自动调度。
 
 ## 查询新闻
 

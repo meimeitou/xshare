@@ -15,6 +15,22 @@
 
 核心原则：**LLM 不碰数字**——所有数值结论由确定性代码（Tool）产出，LLM 只做 "理解→调度→表达"。
 
+## 1.2 数据源策略（2026-07）
+
+| 数据类型 | 本阶段数据源策略 | 说明 |
+|------|------|------|
+| 当天实时行情 / 大盘快照 | 仅 AkShare | 个股失败回退本地 `stock_daily`（`is_delayed`）；大盘失败返回字段级 error；**不回退 Tushare** |
+| 历史数据读取 | DuckDB（sync 写入） | 日线/财务/列表等读路径默认不打外部 API |
+| 基础/历史同步 | Tushare | sync 任务写库（当前无实时权限） |
+| Tushare 日线可用时间 | 交易日 15:00-16:00 入库 | 运营建议 17:00 后在 `/sync` 触发或依赖日历任务 |
+
+实现约束：
+
+- 实时类接口（行情、指数、涨跌统计、板块、成交额、北向、涨跌幅榜）**仅 AkShare**，不因盘中/盘后切换，也不回退 Tushare。
+- AkShare 失败时：个股回退本地 `stock_daily`；大盘由工具层返回 `*_error`。
+- `daily` / `daily_basic` / `fund_nav` 定时任务仅在交易日 **17:00** 后执行。
+- 历史类数据（日线/财务/基金/股票列表）默认 **local-first**：读路径不打外部 API。
+
 ### 1.1 为什么选择 nanobot
 
 | 自研 | nanobot |
@@ -97,7 +113,7 @@
           │  ┌────────────▼────────────┐  │
           │  │  Data Layer (数据层)     │  │
           │  │  AKShare · Tushare      │  │
-          │  │  SQLite 本地缓存         │  │
+          │  │  DuckDB 本地缓存         │  │
           │  └─────────────────────────┘  │
           └───────────────────────────────┘
 ```
@@ -119,6 +135,7 @@ LLM 收到 (system_prompt + skills + 用户消息 + 上下文)
 ```
 
 **与原方案的差异**：
+
 - 原方案：预定义 DAG，步骤硬编码 → 新场景需要加新 DAG
 - nanobot：LLM 自主编排工具调用 → Skill 提供领域指导，Tool 提供能力边界
 - **约束靠 Skill prompt 和 Tool schema，而非硬编码流程**
@@ -161,6 +178,7 @@ Skill prompt 示例 (`skills/stock/skill.md`)：
 ```
 
 **这替代了原方案的 Intent Router + Workflow Engine**：
+
 - 不需要手动维护意图清单和路由规则
 - LLM 阅读 Skill prompt 后自然知道何时用什么工具
 - 新增能力 = 新增 Skill 目录 + 对应 Tool，零改动 Agent 代码
@@ -198,6 +216,7 @@ nanobot gateway (主进程)
 ```
 
 **选择 MCP 的理由**：
+
 - 解耦：XShare 工具独立进程，不侵入 nanobot 代码
 - 标准化：MCP 是通用协议，工具可复用于 Claude Desktop / Cursor 等
 - 调试方便：可单独启动 MCP Server 测试
@@ -245,6 +264,7 @@ nanobot gateway
 ```
 
 **关键能力（nanobot 已内置）**：
+
 - 消息去重 & 会话隔离（按 channel:chat_id）
 - 语音消息自动转文字（Whisper，通过 Groq 免费层）
 - 图片/文件接收与处理
@@ -312,8 +332,6 @@ nanobot 内置定时任务能力，可用于：
 | `stock_quote` | 实时行情 | `{code: "002594.SZ"}` | `{price, change, volume, ...}` |
 | `stock_indicators` | 技术指标计算 | `{code, indicators[], period}` | `{ma5, ma20, macd, rsi, ...}` |
 | `stock_fundamentals` | 基本面数据 | `{code}` | `{pe, pb, roe, revenue_growth, ...}` |
-| `fund_info` | 基金基础信息 | `{code: "110011"}` | `{name, type, manager, size, ...}` |
-| `fund_analysis` | 基金绩效分析 | `{code, period}` | `{annual_return, max_drawdown, sharpe, ...}` |
 | `stock_screen` | 条件筛选 | `{filters: [{field, op, value}]}` | `[{code, name, ...}, ...]` |
 | `backtest_run` | 策略回测 | `{strategy, target, period}` | `{annual_return, max_drawdown, trades[]}` |
 | `market_overview` | 大盘概览 | `{}` | `{sh_index, sz_index, sectors, ...}` |
@@ -325,13 +343,18 @@ nanobot 内置定时任务能力，可用于：
 
 | 数据类型 | 来源 | 缓存策略 |
 |---------|------|---------|
-| 实时行情 | AKShare / 东财接口 | TTL 30s（内存缓存） |
-| 日线历史 | Tushare / AKShare | DuckDB + Parquet，每日增量更新 |
-| 基金净值 | 天天基金 / AKShare | DuckDB + Parquet，每日增量更新 |
-| 财务数据 | Tushare | DuckDB，季度更新 |
-| 公告/新闻 | 东财 / 新浪 | DuckDB，Cron 定时拉取（每日 3 次），保留近 90 天 |
+| 实时行情 | 仅 AkShare | 直连 AkShare；失败回退 `stock_daily` 最近收盘（`is_delayed`）；不回退 Tushare |
+| 日线历史 | Tushare（批量 sync） | DuckDB `stock_daily` + watermark；读路径 local-first |
+| 指数基础 / 日线 | Tushare（批量 sync） | DuckDB `index_basic` / `index_daily`；日历任务同股票日线 |
+| ETF 基础 / 日线 | Tushare（批量 sync） | DuckDB `etf_basic` / `fund_daily`；日历任务同股票日线 |
+| 每日指标 | Tushare（批量 sync） | DuckDB `stock_daily_basic` |
+| 基金净值 | Tushare / AkShare sync | DuckDB `fund_nav`；读路径 local-first |
+| 财务数据 | Tushare sync | DuckDB `stock_finance`；读路径 local-first |
+| 交易日历 | Tushare sync | DuckDB `trade_cal` |
+| 公告/新闻 | 同花顺 | DuckDB `news`，interval 定时拉取 |
 
 **数据校验规则**（在 Tool 内部执行，不经过 LLM）：
+
 - 价格 ≤ 0 → 丢弃并告警
 - 涨跌幅 > 20%（非 ST/新股）→ 标记异常
 - 时间戳不连续 → 补全交易日历
@@ -466,33 +489,31 @@ xshare/
 │       │   └── skill.md           # 回测 Skill prompt
 │       └── market/
 │           └── skill.md           # 市场概览 Skill prompt
-├── src/
-│   └── xshare/
-│       ├── __init__.py
-│       ├── mcp_server.py          # MCP Server 入口
-│       ├── tools/                 # MCP Tool 实现
-│       │   ├── stock_resolve.py   # 股票代码解析
-│       │   ├── stock_quote.py     # 实时行情
-│       │   ├── stock_indicators.py # 技术指标
-│       │   ├── stock_fundamentals.py # 基本面
-│       │   ├── fund_info.py       # 基金信息
-│       │   ├── fund_analysis.py   # 基金分析
-│       │   ├── screener.py        # 条件筛选
-│       │   ├── backtest.py        # 回测引擎
-│       │   └── market_overview.py # 大盘概览
-│       ├── data/                  # 数据层
-│       │   ├── sources/           # 数据源适配 (AKShare/Tushare)
-│       │   ├── db.py              # DuckDB 连接 & 表管理
-│       │   ├── news.py            # 新闻拉取 & 存储
-│       │   └── validator.py       # 数据校验
-│       └── indicators/            # 指标计算
-│           ├── technical.py       # 技术指标 (MA/MACD/RSI/...)
-│           └── fundamental.py     # 基本面指标
+├── xshare/
+│   ├── __init__.py
+│   ├── cli.py                 # CLI 子命令入口（db/portfolio/news/serve）
+│   ├── mcp_server.py          # MCP Server 入口
+│   ├── tools/                 # MCP Tool 实现
+│   │   ├── stock_resolve.py   # 股票代码解析
+│   │   ├── stock_quote.py     # 实时行情
+│   │   ├── stock_indicators.py # 技术指标
+│   │   ├── stock_fundamentals.py # 基本面
+│   │   ├── screener.py        # 条件筛选
+│   │   ├── backtest.py        # 回测引擎
+│   │   └── market_overview.py # 大盘概览
+│   ├── data/                  # 数据层
+│   │   ├── sources/           # 数据源适配 (AKShare/Tushare)
+│   │   ├── db.py              # DuckDB 连接 & 表管理
+│   │   ├── news.py            # 新闻拉取 & 存储
+│   │   └── validator.py       # 数据校验
+│   └── indicators/            # 指标计算
+│       ├── technical.py       # 技术指标 (MA/MACD/RSI/...)
+│       └── fundamental.py     # 基本面指标
 ├── config/
 │   └── nanobot.example.json       # nanobot 配置示例
 ├── tests/
 ├── scripts/
-│   └── init_db.py                 # 初始化本地数据库
+│   └── fetch_tushare_docs.py     # 辅助脚本（Tushare 文档抓取）
 └── pyproject.toml
 ```
 
@@ -611,10 +632,9 @@ nanobot agent -m "帮我看看茅台"
 
 - [ ] `stock_indicators` 技术指标 Tool (MA/MACD/RSI)
 - [ ] `stock_fundamentals` 基本面 Tool
-- [ ] `fund_info` + `fund_analysis` 基金 Tool
 - [ ] `stock_screen` 条件筛选 Tool
 - [ ] 完善各领域 Skill prompt
-- [ ] 本地 DuckDB 数据缓存 + 新闻定时拉取
+- [x] 本地 DuckDB 数据缓存 + 新闻定时拉取 + watermark / local-first
 
 ### Phase 3 — 好用
 

@@ -13,6 +13,7 @@ venv/
 # DuckDB data
 data/*.duckdb
 data/*.duckdb.wal
+data/*.sqlite*
 
 # IDE
 .idea/
@@ -23,7 +24,7 @@ data/*.duckdb.wal
 # OS
 .DS_Store
 Thumbs.db
-
+tushare-api/
 # Environment variables
 .env
 scripts/portfolio.csv
@@ -32,4 +33,11 @@ scripts/portfolio.csv
 workspace/USER.md
 workspace/memory/*
 workspace/sessions/*
-workspace/cron/*
+
+# Frontend
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+
+# Makefile logs & pids
+.logs/

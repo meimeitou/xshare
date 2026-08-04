@@ -16,13 +16,22 @@ dependencies = [
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
     "mineru-kie-sdk>=0.1.1",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pypinyin>=0.52.0",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
-]
+[project.scripts]
+xshare = "xshare.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/xshare"]
+packages = ["xshare"]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
+    "jupyter>=1.1.1",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "mcp[cli]>=1.0.0",
+]

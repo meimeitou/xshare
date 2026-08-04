@@ -1,0 +1,264 @@
+@import "tailwindcss";
+
+/* ------ Design tokens ------------------------------------------------------ */
+:root {
+  --bg: #f3f7fb;
+  --bg-elevated: #ffffff;
+  --bg-panel: #edf2f8;
+  --bg-strong: #e7edf5;
+  --bg-raised: #e7edf5;
+  --bg-noise: rgba(19, 30, 45, 0.02);
+
+  --border: #d8e0ea;
+  --border-strong: #c7d3e2;
+
+  --text: #121a24;
+  --text-muted: #4c5a6b;
+  --text-dim: #6f7d8d;
+
+  --accent: #0ea5b6;
+  --accent-soft: rgba(14, 165, 182, 0.14);
+  --accent-strong: #0b7f8c;
+
+  --up: #0f9f62;
+  --down: #d64545;
+
+  --radius: 14px;
+  --radius-sm: 10px;
+
+  --shadow-soft: 0 10px 30px rgba(20, 40, 70, 0.08);
+  --shadow-hard: 0 24px 60px rgba(20, 40, 70, 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #090e14;
+    --bg-elevated: #111925;
+    --bg-panel: #141f2d;
+    --bg-strong: #1b2938;
+    --bg-raised: #1b2938;
+    --bg-noise: rgba(255, 255, 255, 0.025);
+
+    --border: #26394d;
+    --border-strong: #2f4861;
+
+    --text: #e8eef6;
+    --text-muted: #b4c0d0;
+    --text-dim: #8ea1b8;
+
+    --accent: #2bc6d7;
+    --accent-soft: rgba(43, 198, 215, 0.18);
+    --accent-strong: #7de2ed;
+
+    --up: #3dcb87;
+    --down: #f26868;
+
+    --shadow-soft: 0 12px 36px rgba(3, 8, 18, 0.42);
+    --shadow-hard: 0 26px 72px rgba(2, 6, 16, 0.56);
+  }
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-panel: var(--bg-panel);
+  --color-raised: var(--bg-raised);
+  --color-border: var(--border);
+  --color-muted: var(--text-muted);
+  --color-dim: var(--text-dim);
+  --color-accent: var(--accent);
+  --color-up: var(--up);
+  --color-down: var(--down);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/* ------ Base --------------------------------------------------------------- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  position: relative;
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -2;
+  background:
+    radial-gradient(
+      900px 500px at 8% -10%,
+      rgba(14, 165, 182, 0.22),
+      transparent 55%
+    ),
+    radial-gradient(
+      780px 440px at 92% -8%,
+      rgba(52, 117, 199, 0.16),
+      transparent 60%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--bg) 86%, var(--bg-elevated)),
+      var(--bg)
+    );
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  background-image:
+    linear-gradient(var(--bg-noise) 1px, transparent 1px),
+    linear-gradient(90deg, var(--bg-noise) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: radial-gradient(circle at center, black 35%, transparent 100%);
+}
+
+a {
+  color: inherit;
+}
+
+/* ------ Scrollbar ---------------------------------------------------------- */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-dim) 62%, transparent);
+  border-radius: 99px;
+}
+
+/* ------ Utilities ---------------------------------------------------------- */
+.mono {
+  font-family: var(--font-geist-mono), monospace;
+}
+.text-up {
+  color: var(--up);
+}
+.text-down {
+  color: var(--down);
+}
+.text-accent {
+  color: var(--accent);
+}
+
+.surface {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
+  box-shadow: var(--shadow-soft);
+}
+
+.surface-flat {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.surface-header {
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-panel) 88%, transparent);
+}
+
+.focus-ring {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent),
+    0 0 0 5px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.btn-primary {
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 92%, white 8%),
+    var(--accent)
+  );
+  color: #041015;
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 96%, white 4%),
+    color-mix(in srgb, var(--accent) 90%, black 10%)
+  );
+}
+
+.btn-secondary {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg-panel) 75%, transparent);
+  color: var(--text-muted);
+}
+
+.btn-secondary:hover {
+  background: var(--bg-strong);
+  color: var(--text);
+}
+
+/* shimmer skeleton */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--bg-panel) 88%, transparent) 25%,
+    color-mix(in srgb, var(--bg-strong) 94%, transparent) 50%,
+    color-mix(in srgb, var(--bg-panel) 88%, transparent) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+  border-radius: var(--radius);
+}
+
+/* price flash */
+@keyframes flash-up {
+  0%,
+  100% {
+    background: transparent;
+  }
+  30% {
+    background: color-mix(in srgb, var(--up) 15%, transparent);
+  }
+}
+@keyframes flash-down {
+  0%,
+  100% {
+    background: transparent;
+  }
+  30% {
+    background: color-mix(in srgb, var(--down) 15%, transparent);
+  }
+}
+.flash-up {
+  animation: flash-up 0.8s ease;
+}
+.flash-down {
+  animation: flash-down 0.8s ease;
+}

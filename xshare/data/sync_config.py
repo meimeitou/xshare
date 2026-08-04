@@ -1,0 +1,756 @@
+"""定时同步任务的配置管理、执行器与后台循环。
+
+职责边界：本模块管"配置读写 + 阻塞执行器 + 窗口判定 + 后台 timer"。
+任务执行入口 run_job 与 worker 在 task_queue.py（单向依赖：sync_loop
+调 task_queue.enqueue，task_queue 顶部 import 本模块的执行器）。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import threading
+from datetime import date, datetime, time, timedelta
+
+from xshare.data.sqlite_db import get_sqlite_conn, init_sqlite_tables
+from xshare.utils import env_int
+
+logger = logging.getLogger(__name__)
+
+NEWS_JOB = "news"
+STOCK_JOB = "stock_basic"
+DAILY_JOB = "daily"
+INDEX_BASIC_JOB = "index_basic"
+INDEX_DAILY_JOB = "index_daily"
+ETF_BASIC_JOB = "etf_basic"
+FUND_DAILY_JOB = "fund_daily"
+TRADE_CAL_JOB = "trade_cal"
+DAILY_BASIC_JOB = "daily_basic"
+FINANCE_JOB = "finance"
+FUND_NAV_JOB = "fund_nav"
+
+ALL_JOBS = (
+    NEWS_JOB,
+    STOCK_JOB,
+    DAILY_JOB,
+    INDEX_BASIC_JOB,
+    INDEX_DAILY_JOB,
+    ETF_BASIC_JOB,
+    FUND_DAILY_JOB,
+    TRADE_CAL_JOB,
+    DAILY_BASIC_JOB,
+    FINANCE_JOB,
+    FUND_NAV_JOB,
+)
+
+# 日历触发（非 interval）的任务：交易日 17:00 各入队一次
+CALENDAR_JOBS = frozenset({
+    DAILY_JOB, INDEX_DAILY_JOB, FUND_DAILY_JOB, DAILY_BASIC_JOB, FUND_NAV_JOB,
+})
+
+# 日历任务的触发时刻（本地时间，交易日 17:00）。
+# Tushare 日线通常 15:00-16:00 入库，17:00 触发留出缓冲，确保收盘数据齐全。
+_CALENDAR_TRIGGER_HOUR = 17
+_CALENDAR_TRIGGER_MINUTE = 0
+
+JOB_META: dict[str, dict] = {
+    NEWS_JOB: {
+        "label": "新闻同步",
+        "description": "同花顺 7×24 快讯写入 DuckDB news 表",
+        "params_schema": {
+            "pages": {"type": "integer", "default": 3, "description": "抓取页数"},
+            "retain_days": {"type": "integer", "default": 1, "description": "新闻保留天数"},
+        },
+    },
+    STOCK_JOB: {
+        "label": "股票列表",
+        "description": "Tushare A 股基础信息写入 stock_basic（需 TUSHARE_TOKEN）",
+        "params_schema": {},
+    },
+    DAILY_JOB: {
+        "label": "日线行情",
+        "description": "全市场日线 OHLCV；交易日 17:00 触发；补数可绕过窗口",
+        "params_schema": {
+            "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
+            "years": {"type": "integer", "description": "一次性同步最近 N 年历史数据"},
+            "backfill": {"type": "boolean", "default": False, "description": "历史补数，忽略 17:00 窗口"},
+        },
+    },
+    INDEX_BASIC_JOB: {
+        "label": "指数列表",
+        "description": "Tushare 指数基础信息写入 index_basic（默认 SSE/SZSE/CSI）",
+        "params_schema": {
+            "force": {"type": "boolean", "default": False, "description": "忽略 24h 缓存强制刷新"},
+        },
+    },
+    INDEX_DAILY_JOB: {
+        "label": "指数日线",
+        "description": "按 index_basic 拉取指数日线；交易日 17:00 触发；补数可绕过窗口",
+        "params_schema": {
+            "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
+            "years": {"type": "integer", "description": "一次性同步最近 N 年历史数据"},
+            "backfill": {"type": "boolean", "default": False, "description": "历史补数，忽略 17:00 窗口"},
+        },
+    },
+    ETF_BASIC_JOB: {
+        "label": "ETF 列表",
+        "description": "Tushare etf_basic 写入 etf_basic（默认上市状态 L）",
+        "params_schema": {
+            "force": {"type": "boolean", "default": False, "description": "忽略 24h 缓存强制刷新"},
+        },
+    },
+    FUND_DAILY_JOB: {
+        "label": "ETF 日线",
+        "description": "Tushare fund_daily 写入 fund_daily；交易日 17:00 触发；补数可绕过窗口",
+        "params_schema": {
+            "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
+            "years": {"type": "integer", "description": "一次性同步最近 N 年历史数据"},
+            "backfill": {"type": "boolean", "default": False, "description": "历史补数，忽略 17:00 窗口"},
+        },
+    },
+    TRADE_CAL_JOB: {
+        "label": "交易日历",
+        "description": "Tushare 交易日历写入 trade_cal，供本地判定开市日",
+        "params_schema": {
+            "years": {"type": "integer", "default": 3, "description": "回溯年数"},
+        },
+    },
+    DAILY_BASIC_JOB: {
+        "label": "每日指标",
+        "description": "全市场 PE/PB 等写入 stock_daily_basic；交易日 17:00 触发",
+        "params_schema": {
+            "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+        },
+    },
+    FINANCE_JOB: {
+        "label": "财务指标",
+        "description": "按 stock_basic 分片同步 fina_indicator → stock_finance",
+        "params_schema": {
+            "limit": {"type": "integer", "default": 200, "description": "本次最多同步股票数"},
+            "force": {"type": "boolean", "default": False, "description": "忽略 7 天水位"},
+        },
+    },
+    FUND_NAV_JOB: {
+        "label": "基金净值",
+        "description": "同步 fund_basic/持仓相关基金净值；交易日 17:00 触发",
+        "params_schema": {
+            "limit": {"type": "integer", "default": 50, "description": "本次最多同步基金数"},
+        },
+    },
+}
+
+_POLL_SECONDS = 30
+_trade_day_cache: dict[str, bool] = {}
+_trade_day_cache_lock = threading.Lock()
+_TRADE_DAY_CACHE_MAX = 366 * 5  # 最多缓存 5 年交易日，避免无界增长
+
+
+def _cache_trade_day(ymd: str, is_open: bool) -> None:
+    """线程安全地写入交易日缓存，达到上限时清空重来。"""
+    with _trade_day_cache_lock:
+        if len(_trade_day_cache) >= _TRADE_DAY_CACHE_MAX:
+            _trade_day_cache.clear()
+        _trade_day_cache[ymd] = is_open
+
+
+def _is_trade_day(day: date) -> bool:
+    """优先本地 trade_cal → Tushare API → weekday 回退。"""
+    ymd = day.strftime("%Y%m%d")
+    with _trade_day_cache_lock:
+        cached = _trade_day_cache.get(ymd)
+    if cached is not None:
+        return cached
+
+    try:
+        from xshare.data.sources.tushare_source import is_trade_day_local
+        local = is_trade_day_local(day)
+        if local is not None:
+            _cache_trade_day(ymd, local)
+            return local
+    except Exception as exc:
+        logger.debug("本地 trade_cal 查询失败: %s", exc)
+
+    token = os.environ.get("TUSHARE_TOKEN")
+    if not token:
+        is_open = day.weekday() < 5
+        _cache_trade_day(ymd, is_open)
+        return is_open
+
+    try:
+        import tushare as ts
+
+        from xshare.data import rate_limit
+        rate_limit.acquire("tushare")
+        pro = ts.pro_api(token)
+        try:
+            cal = pro.trade_cal(exchange="", start_date=ymd, end_date=ymd, is_open="1")
+        except TypeError:
+            cal = pro.trade_cal(start_date=ymd, end_date=ymd)
+
+        if cal is not None and not cal.empty:
+            col = "cal_date" if "cal_date" in cal.columns else "trade_date" if "trade_date" in cal.columns else None
+            is_open = False
+            if col:
+                is_open = ymd in set(cal[col].astype(str).tolist())
+            _cache_trade_day(ymd, is_open)
+            return is_open
+    except Exception as exc:
+        logger.debug("trade_cal 判定失败，回退 weekday: %s", exc)
+
+    is_open = day.weekday() < 5
+    _cache_trade_day(ymd, is_open)
+    return is_open
+
+
+def _daily_sync_window_open(now: datetime | None = None) -> bool:
+    """A 股日线/日频同步窗口：交易日 17:00 之后。"""
+    current = now or datetime.now()
+    if not _is_trade_day(current.date()):
+        return False
+    return (
+        current.hour > _CALENDAR_TRIGGER_HOUR
+        or (current.hour == _CALENDAR_TRIGGER_HOUR
+            and current.minute >= _CALENDAR_TRIGGER_MINUTE)
+    )
+
+
+def check_calendar_window(
+    job: str, payload: dict | None = None, now: datetime | None = None
+) -> tuple[bool, str]:
+    """检查日历任务是否在可执行窗口内。
+
+    非日历任务或 backfill 总是返回 ``(True, "")``。
+    供 ``run_job``（执行前）和 ``sync_loop``（入队前）共用，消除窗口判断重复。
+
+    Returns:
+        (eligible, reason) — eligible 为 False 时 reason 说明原因。
+    """
+    if job not in CALENDAR_JOBS:
+        return True, ""
+    if (payload or {}).get("backfill"):
+        return True, ""
+    current = now or datetime.now()
+    if not _daily_sync_window_open(current):
+        return False, f"{job} 同步仅在交易日 17:00 后执行"
+    return True, ""
+
+
+def _parse_local_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value)[:19], "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def _next_daily_window_open(now: datetime | None = None) -> datetime:
+    """下一次日历同步窗口开启时刻（本地时间，交易日 17:00）。"""
+    current = now or datetime.now()
+    today = current.date()
+    if _is_trade_day(today):
+        open_at = datetime.combine(today, time(_CALENDAR_TRIGGER_HOUR, _CALENDAR_TRIGGER_MINUTE))
+        if current < open_at:
+            return open_at
+    probe = today
+    for _ in range(14):
+        probe += timedelta(days=1)
+        if _is_trade_day(probe):
+            return datetime.combine(probe, time(_CALENDAR_TRIGGER_HOUR, _CALENDAR_TRIGGER_MINUTE))
+    return current + timedelta(days=1)
+
+
+def estimate_next_run_at(job: str, cfg: dict, now: datetime | None = None) -> str | None:
+    """估算定时 loop 的下一次入队时间（供前端展示）。"""
+    current = now or datetime.now()
+    if not cfg.get("enabled"):
+        return None
+
+    if job in CALENDAR_JOBS:
+        if not _daily_sync_window_open(current):
+            return _next_daily_window_open(current).strftime("%Y-%m-%d %H:%M:%S")
+        # 窗口内：若今日已成功跑过，则指向下一交易日 17:00
+        last = _parse_local_ts(cfg.get("last_run_at"))
+        if last and last.date() == current.date() and cfg.get("last_status") == "ok":
+            return _next_daily_window_open(current + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        return current.strftime("%Y-%m-%d %H:%M:%S")
+
+    interval = int(cfg.get("interval_minutes") or 60)
+    base = _parse_local_ts(cfg.get("last_run_at")) or _parse_local_ts(cfg.get("updated_at")) or current
+    nxt = base + timedelta(minutes=interval)
+    while nxt <= current:
+        nxt += timedelta(minutes=interval)
+    return nxt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _env_int(name: str, default: int) -> int:
+    """读取环境变量为正 int（<=0 回退 default）。
+
+    保留 >0 校验语义（与原实现一致）。
+    """
+    v = env_int(name, default)
+    return v if v > 0 else default
+
+
+# ─── 配置读写 ────────────────────────────────────────────────────────────────────────
+
+def init_sync_config() -> None:
+    """建表 + 种子默认值（幂等）。"""
+    init_sqlite_tables()
+    conn = get_sqlite_conn()
+    seeds = [
+        (NEWS_JOB, _env_int("XSHARE_NEWS_SYNC_INTERVAL", 15)),
+        (STOCK_JOB, _env_int("XSHARE_STOCK_SYNC_INTERVAL", 1440)),
+        (DAILY_JOB, _env_int("XSHARE_DAILY_SYNC_INTERVAL", 1440)),  # 日历任务：间隔仅作展示兜底
+        (INDEX_BASIC_JOB, _env_int("XSHARE_INDEX_BASIC_SYNC_INTERVAL", 1440)),
+        (INDEX_DAILY_JOB, _env_int("XSHARE_INDEX_DAILY_SYNC_INTERVAL", 1440)),
+        (ETF_BASIC_JOB, _env_int("XSHARE_ETF_BASIC_SYNC_INTERVAL", 1440)),
+        (FUND_DAILY_JOB, _env_int("XSHARE_FUND_DAILY_SYNC_INTERVAL", 1440)),
+        (TRADE_CAL_JOB, _env_int("XSHARE_TRADE_CAL_SYNC_INTERVAL", 10080)),  # 每周
+        (DAILY_BASIC_JOB, _env_int("XSHARE_DAILY_BASIC_SYNC_INTERVAL", 1440)),
+        (FINANCE_JOB, _env_int("XSHARE_FINANCE_SYNC_INTERVAL", 10080)),
+        (FUND_NAV_JOB, _env_int("XSHARE_FUND_NAV_SYNC_INTERVAL", 1440)),
+    ]
+    for job, interval in seeds:
+        conn.execute(
+            """
+            INSERT INTO sync_config (job, enabled, interval_minutes, last_run_at, last_status, last_error)
+            VALUES (?, 1, ?, NULL, NULL, NULL)
+            ON CONFLICT (job) DO NOTHING
+            """,
+            [job, interval],
+        )
+
+
+def get_one(job: str) -> dict | None:
+    conn = get_sqlite_conn()
+    row = conn.execute(
+        "SELECT job, enabled, interval_minutes, last_run_at, last_status, last_error, updated_at "
+        "FROM sync_config WHERE job = ?",
+        [job],
+    ).fetchone()
+    if not row:
+        return None
+    job_dict = _row_to_dict(row)
+    meta = JOB_META.get(job_dict["job"], {})
+    job_dict["label"] = meta.get("label", job_dict["job"])
+    job_dict["description"] = meta.get("description", "")
+    job_dict["params_schema"] = meta.get("params_schema", {})
+    job_dict["schedule"] = "calendar_1700" if job_dict["job"] in CALENDAR_JOBS else "interval"
+    job_dict["next_run_at"] = estimate_next_run_at(job_dict["job"], job_dict)
+    return job_dict
+
+
+def get_all() -> list[dict]:
+    conn = get_sqlite_conn()
+    rows = conn.execute(
+        "SELECT job, enabled, interval_minutes, last_run_at, last_status, last_error, updated_at "
+        "FROM sync_config ORDER BY job"
+    ).fetchall()
+    jobs = [_row_to_dict(r) for r in rows]
+    now = datetime.now()
+    for j in jobs:
+        meta = JOB_META.get(j["job"], {})
+        j["label"] = meta.get("label", j["job"])
+        j["description"] = meta.get("description", "")
+        j["params_schema"] = meta.get("params_schema", {})
+        j["schedule"] = "calendar_1700" if j["job"] in CALENDAR_JOBS else "interval"
+        j["next_run_at"] = estimate_next_run_at(j["job"], j, now)
+    return jobs
+
+
+def _row_to_dict(row) -> dict:
+    return {
+        "job": row[0],
+        "enabled": bool(row[1]),
+        "interval_minutes": row[2],
+        "last_run_at": str(row[3]) if row[3] else None,
+        "last_status": row[4],
+        "last_error": row[5],
+        "updated_at": str(row[6]) if row[6] else None,
+    }
+
+
+def update(job: str, enabled: bool | None = None, interval_minutes: int | None = None) -> dict | None:
+    """运行时修改配置，热生效（loop 在 30s 内感知）。"""
+    conn = get_sqlite_conn()
+    sets: list[str] = []
+    params: list = []
+    if enabled is not None:
+        sets.append("enabled = ?")
+        params.append(bool(enabled))
+    if interval_minutes is not None:
+        if interval_minutes <= 0:
+            raise ValueError("interval_minutes 必须为正整数")
+        sets.append("interval_minutes = ?")
+        params.append(int(interval_minutes))
+    if not sets:
+        return get_one(job)
+    sets.append("updated_at = current_timestamp")
+    params.append(job)
+    conn.execute(f"UPDATE sync_config SET {', '.join(sets)} WHERE job = ?", params)
+    return get_one(job)
+
+
+def _set_state(job: str, status: str, error: str | None = None) -> None:
+    conn = get_sqlite_conn()
+    conn.execute(
+        "UPDATE sync_config SET last_run_at = current_timestamp, last_status = ?, last_error = ?, updated_at = current_timestamp WHERE job = ?",
+        [status, error, job],
+    )
+
+
+# ─── 执行器 ──────────────────────────────────────────────────────────────────
+
+def _sync_news_blocking(payload: dict | None = None) -> int:
+    from xshare.data.news import cleanup_old_news, save_news
+    from xshare.data.sources.ths_news import fetch_all_pages
+    from xshare.data import watermark as wm
+
+    pages = int((payload or {}).get("pages") or _env_int("XSHARE_NEWS_PAGES", 3))
+    retain_days = int((payload or {}).get("retain_days") or _env_int("XSHARE_NEWS_RETAIN_DAYS", 1))
+    records = fetch_all_pages(max_pages=pages)
+    if records:
+        save_news(records)
+    cleanup_old_news(retain_days=retain_days)
+    wm.set_watermark(wm.DATASET_NEWS, "ALL", wm.STATUS_OK, len(records))
+    logger.info(
+        "[sync] news 完成 table=news rows=%d pages=%d retain_days=%d source=ths_realtime",
+        len(records), pages, retain_days,
+    )
+    return len(records)
+
+
+def _sync_stock_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_stock_basic_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        logger.debug("未配置 TUSHARE_TOKEN，跳过股票列表同步")
+        return 0
+    force = bool((payload or {}).get("force"))
+    count = sync_stock_basic_to_db(force=force)
+    if count:
+        logger.info("股票列表已同步: %d 条", count)
+    else:
+        logger.info("股票列表已是最新，跳过同步")
+    return count
+
+
+def _sync_daily_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_stock_daily_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        logger.debug("未配置 TUSHARE_TOKEN，跳过日线行情同步")
+        return 0
+    p = payload or {}
+    start_date = p.get("start_date")
+    end_date = p.get("end_date")
+    overwrite = bool(p.get("overwrite"))
+    if start_date or end_date:
+        count = sync_stock_daily_to_db(
+            start_date=start_date, end_date=end_date,
+            code=p.get("code"), overwrite=overwrite,
+        )
+    else:
+        if p.get("years"):
+            days = int(p["years"]) * 366
+        elif p.get("backfill"):
+            days = int(p.get("days") or _env_int("XSHARE_DAILY_BACKFILL_DAYS", 252))
+        else:
+            days = int(p.get("days") or _env_int("XSHARE_DAILY_SYNC_DAYS", 1))
+        count = sync_stock_daily_to_db(days=days, code=p.get("code"), overwrite=overwrite)
+        if count:
+            logger.info("日线行情已同步: %d 条（最近 %d 个交易日）", count, days)
+        else:
+            logger.info("日线行情无可同步数据（可能非交易日）")
+        return count
+    if count:
+        logger.info("日线行情已同步: %d 条（区间 %s..%s overwrite=%s）",
+                    count, start_date, end_date, overwrite)
+    else:
+        logger.info("日线行情无可同步数据（可能非交易日）")
+    return count
+
+
+def _sync_index_basic_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_index_basic_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        logger.debug("未配置 TUSHARE_TOKEN，跳过指数列表同步")
+        return 0
+    force = bool((payload or {}).get("force"))
+    count = sync_index_basic_to_db(force=force)
+    if count:
+        logger.info("指数列表已同步: %d 条", count)
+    else:
+        logger.info("指数列表已是最新，跳过同步")
+    return count
+
+
+def _sync_index_daily_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_index_daily_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        logger.debug("未配置 TUSHARE_TOKEN，跳过指数日线同步")
+        return 0
+    p = payload or {}
+    start_date = p.get("start_date")
+    end_date = p.get("end_date")
+    overwrite = bool(p.get("overwrite"))
+    if start_date or end_date:
+        count = sync_index_daily_to_db(
+            start_date=start_date, end_date=end_date,
+            code=p.get("code"), overwrite=overwrite,
+        )
+    else:
+        if p.get("years"):
+            days = int(p["years"]) * 366
+        elif p.get("backfill"):
+            days = int(p.get("days") or _env_int("XSHARE_INDEX_DAILY_BACKFILL_DAYS", 252))
+        else:
+            days = int(p.get("days") or _env_int("XSHARE_INDEX_DAILY_SYNC_DAYS", 1))
+        count = sync_index_daily_to_db(days=days, code=p.get("code"), overwrite=overwrite)
+        if count:
+            logger.info("指数日线已同步: %d 条（最近 %d 个交易日）", count, days)
+        else:
+            logger.info("指数日线无可同步数据（可能非交易日或无 index_basic）")
+        return count
+    if count:
+        logger.info("指数日线已同步: %d 条（区间 %s..%s overwrite=%s）",
+                    count, start_date, end_date, overwrite)
+    else:
+        logger.info("指数日线无可同步数据（可能非交易日或无 index_basic）")
+    return count
+
+
+def _sync_etf_basic_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_etf_basic_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        logger.debug("未配置 TUSHARE_TOKEN，跳过 ETF 列表同步")
+        return 0
+    force = bool((payload or {}).get("force"))
+    count = sync_etf_basic_to_db(force=force)
+    if count:
+        logger.info("ETF 列表已同步: %d 条", count)
+    else:
+        logger.info("ETF 列表已是最新，跳过同步")
+    return count
+
+
+def _sync_fund_daily_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_fund_daily_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        logger.debug("未配置 TUSHARE_TOKEN，跳过 ETF 日线同步")
+        return 0
+    p = payload or {}
+    start_date = p.get("start_date")
+    end_date = p.get("end_date")
+    overwrite = bool(p.get("overwrite"))
+    if start_date or end_date:
+        count = sync_fund_daily_to_db(
+            start_date=start_date, end_date=end_date,
+            code=p.get("code"), overwrite=overwrite,
+        )
+    else:
+        if p.get("years"):
+            days = int(p["years"]) * 366
+        elif p.get("backfill"):
+            days = int(p.get("days") or _env_int("XSHARE_FUND_DAILY_BACKFILL_DAYS", 252))
+        else:
+            days = int(p.get("days") or _env_int("XSHARE_FUND_DAILY_SYNC_DAYS", 1))
+        count = sync_fund_daily_to_db(days=days, code=p.get("code"), overwrite=overwrite)
+        if count:
+            logger.info("ETF 日线已同步: %d 条（最近 %d 个交易日）", count, days)
+        else:
+            logger.info("ETF 日线无可同步数据（可能非交易日）")
+        return count
+    if count:
+        logger.info("ETF 日线已同步: %d 条（区间 %s..%s overwrite=%s）",
+                    count, start_date, end_date, overwrite)
+    else:
+        logger.info("ETF 日线无可同步数据（可能非交易日）")
+    return count
+
+
+def _sync_trade_cal_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_trade_cal_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        return 0
+    years = int((payload or {}).get("years") or _env_int("XSHARE_TRADE_CAL_YEARS", 3))
+    count = sync_trade_cal_to_db(years=years)
+    logger.info("交易日历已同步: %d 条", count)
+    return count
+
+
+def _sync_daily_basic_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_daily_basic_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        return 0
+    p = payload or {}
+    days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
+    count = sync_daily_basic_to_db(days=days)
+    logger.info("每日指标已同步: %d 条", count)
+    return count
+
+
+def _sync_finance_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_finance_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        return 0
+    p = payload or {}
+    limit = p.get("limit")
+    force = bool(p.get("force"))
+    count = sync_finance_to_db(limit=int(limit) if limit else None, force=force)
+    logger.info("财务指标已同步: %d 只股票", count)
+    return count
+
+
+def _sync_fund_nav_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_fund_nav_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        return 0
+    limit = (payload or {}).get("limit")
+    count = sync_fund_nav_to_db(limit=int(limit) if limit else None)
+    logger.info("基金净值已同步: %d 只", count)
+    return count
+
+
+_BLOCKING_HANDLERS = {
+    NEWS_JOB: _sync_news_blocking,
+    STOCK_JOB: _sync_stock_blocking,
+    DAILY_JOB: _sync_daily_blocking,
+    INDEX_BASIC_JOB: _sync_index_basic_blocking,
+    INDEX_DAILY_JOB: _sync_index_daily_blocking,
+    ETF_BASIC_JOB: _sync_etf_basic_blocking,
+    FUND_DAILY_JOB: _sync_fund_daily_blocking,
+    TRADE_CAL_JOB: _sync_trade_cal_blocking,
+    DAILY_BASIC_JOB: _sync_daily_basic_blocking,
+    FINANCE_JOB: _sync_finance_blocking,
+    FUND_NAV_JOB: _sync_fund_nav_blocking,
+}
+
+
+# ─── 后台循环 ────────────────────────────────────────────────────────────────
+
+async def sync_loop(job: str) -> None:
+    """后台循环：interval 任务按间隔入队；日历任务在交易日 17:00 入队一次。"""
+    while True:
+        cfg = get_one(job)
+        if not cfg or not cfg["enabled"]:
+            await asyncio.sleep(_POLL_SECONDS)
+            continue
+
+        if job in CALENDAR_JOBS:
+            await _calendar_loop_iteration(job, cfg)
+        else:
+            await _interval_loop_iteration(job, cfg)
+
+
+async def _interval_loop_iteration(job: str, cfg: dict) -> None:
+    interval = cfg["interval_minutes"] * 60
+    deadline = asyncio.get_event_loop().time() + interval
+    while True:
+        now = asyncio.get_event_loop().time()
+        if now >= deadline:
+            break
+        await asyncio.sleep(min(_POLL_SECONDS, deadline - now))
+        cfg = get_one(job)
+        if not cfg or not cfg["enabled"] or cfg["interval_minutes"] * 60 != interval:
+            return
+
+    cfg = get_one(job)
+    if cfg and cfg["enabled"]:
+        try:
+            from xshare.data.task_queue import enqueue
+            task_id = enqueue(job, trigger="schedule")
+            logger.info("定时任务 %s 已入队: #%d", job, task_id)
+        except Exception as exc:
+            logger.warning("定时任务 %s 入队失败: %s", job, exc)
+
+
+async def _calendar_loop_iteration(job: str, cfg: dict) -> None:
+    """等到下一窗口；若今日尚未成功则入队；daily 额外扫 watermark 补洞。"""
+    now = datetime.now()
+    eligible, _ = check_calendar_window(job, now=now)
+    if not eligible:
+        # 睡到窗口或最多 _POLL_SECONDS
+        nxt = _next_daily_window_open(now)
+        wait = max(1.0, min(_POLL_SECONDS, (nxt - now).total_seconds()))
+        await asyncio.sleep(wait)
+        return
+
+    last = _parse_local_ts(cfg.get("last_run_at"))
+    already_ok_today = (
+        last is not None
+        and last.date() == now.date()
+        and cfg.get("last_status") == "ok"
+    )
+
+    from xshare.data.task_queue import enqueue
+
+    if not already_ok_today:
+        try:
+            task_id = enqueue(job, trigger="schedule")
+            logger.info("日历任务 %s 已入队: #%d", job, task_id)
+        except Exception as exc:
+            logger.warning("日历任务 %s 入队失败: %s", job, exc)
+
+    # daily / index_daily：补洞（watermark 缺口）
+    if job == DAILY_JOB:
+        try:
+            from xshare.data.sources.tushare_source import find_missing_daily_dates
+            gaps = find_missing_daily_dates(_env_int("XSHARE_DAILY_GAP_LOOKBACK", 30))
+            if gaps:
+                days = max(len(gaps), _env_int("XSHARE_DAILY_SYNC_DAYS", 1))
+                task_id = enqueue(
+                    DAILY_JOB,
+                    payload={"days": days, "backfill": True},
+                    trigger="schedule",
+                    priority=2,
+                )
+                logger.info("日线补洞 %d 天，已入队 backfill #%d", len(gaps), task_id)
+        except Exception as exc:
+            logger.debug("日线补洞扫描失败: %s", exc)
+
+    if job == INDEX_DAILY_JOB:
+        try:
+            from xshare.data.sources.tushare_source import find_missing_index_daily_dates
+            gaps = find_missing_index_daily_dates(_env_int("XSHARE_INDEX_DAILY_GAP_LOOKBACK", 30))
+            if gaps:
+                days = max(len(gaps), _env_int("XSHARE_INDEX_DAILY_SYNC_DAYS", 1))
+                task_id = enqueue(
+                    INDEX_DAILY_JOB,
+                    payload={"days": days, "backfill": True},
+                    trigger="schedule",
+                    priority=2,
+                )
+                logger.info("指数日线补洞 %d 天，已入队 backfill #%d", len(gaps), task_id)
+        except Exception as exc:
+            logger.debug("指数日线补洞扫描失败: %s", exc)
+
+    if job == FUND_DAILY_JOB:
+        try:
+            from xshare.data.sources.tushare_source import find_missing_fund_daily_dates
+            gaps = find_missing_fund_daily_dates(_env_int("XSHARE_FUND_DAILY_GAP_LOOKBACK", 30))
+            if gaps:
+                days = max(len(gaps), _env_int("XSHARE_FUND_DAILY_SYNC_DAYS", 1))
+                task_id = enqueue(
+                    FUND_DAILY_JOB,
+                    payload={"days": days, "backfill": True},
+                    trigger="schedule",
+                    priority=2,
+                )
+                logger.info("ETF 日线补洞 %d 天，已入队 backfill #%d", len(gaps), task_id)
+        except Exception as exc:
+            logger.debug("ETF 日线补洞扫描失败: %s", exc)
+
+    # 窗口内已处理：睡到次日，避免重复入队
+    await asyncio.sleep(_POLL_SECONDS)
