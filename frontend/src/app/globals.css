@@ -20,8 +20,10 @@
   --accent-soft: rgba(14, 165, 182, 0.14);
   --accent-strong: #0b7f8c;
 
-  --up: #0f9f62;
-  --down: #d64545;
+  --up: #d64545;
+  --down: #0f9f62;
+  --success: #0f9f62;
+  --danger: #d64545;
 
   --radius: 14px;
   --radius-sm: 10px;
@@ -50,8 +52,10 @@
     --accent-soft: rgba(43, 198, 215, 0.18);
     --accent-strong: #7de2ed;
 
-    --up: #3dcb87;
-    --down: #f26868;
+    --up: #f26868;
+    --down: #3dcb87;
+    --success: #3dcb87;
+    --danger: #f26868;
 
     --shadow-soft: 0 12px 36px rgba(3, 8, 18, 0.42);
     --shadow-hard: 0 26px 72px rgba(2, 6, 16, 0.56);
@@ -64,7 +68,8 @@
   --color-panel: var(--bg-panel);
   --color-raised: var(--bg-raised);
   --color-border: var(--border);
-  --color-muted: var(--text-muted);
+  --color-success: var(--success);
+  --color-danger: var(--danger);
   --color-dim: var(--text-dim);
   --color-accent: var(--accent);
   --color-up: var(--up);
@@ -150,6 +155,12 @@ a {
 }
 .text-up {
   color: var(--up);
+}
+.text-success {
+  color: var(--success);
+}
+.text-danger {
+  color: var(--danger);
 }
 .text-down {
   color: var(--down);

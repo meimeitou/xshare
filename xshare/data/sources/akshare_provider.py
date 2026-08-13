@@ -11,13 +11,13 @@ import akshare as ak
 import pandas as pd
 
 from xshare.data.provider import (
+    DataFetchError,
     DataProvider,
     IndexQuote,
     MarketStats,
     RealtimeQuote,
     SectorRank,
     TopMover,
-    detect_asset_type,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,24 +60,87 @@ def _ak_retry(fn):
 
 # ─── 短期内存缓存：同一请求窗口内复用全市场快照 ───────────────────────────────
 # market_mainline / market_overview 一次调用会触发 get_market_stats +
-# get_total_turnover + get_top_movers，三者各自调 stock_zh_a_spot_em()
-# 拉取全 A 股快照（58 页、约 5800 行）。短缓存让它们共享一次拉取，
-# 盘中 30s 内不重复请求同一重数据。
+# get_total_turnover + get_top_movers，三者各自拉取全 A 股快照。
+# 短缓存让它们共享一次拉取，盘中 30s 内不重复请求同一重数据。
+# 东财(*_em)接口易被封禁已弃用，实时快照统一走新浪。
 
 _CACHE_TTL = float(os.environ.get("XSHARE_AKSHARE_SPOT_TTL", "30") or "30")
 _spot_cache_lock = threading.Lock()
 _spot_cache: dict[str, tuple[float, pd.DataFrame]] = {}
 
 
-def _cached_spot_em() -> pd.DataFrame:
-    """带 TTL 的全 A 股快照缓存。"""
+def _sina_to_std_code(sina_code: str) -> str:
+    """新浪代码 (sh600519 / sz002594 / bj430047) → 标准代码 (600519.SH)。"""
+    sina_code = str(sina_code).strip().lower()
+    if len(sina_code) > 2 and sina_code[:2] in ("sh", "sz", "bj"):
+        return f"{sina_code[2:]}.{sina_code[:2].upper()}"
+    return sina_code
+
+
+def _fetch_spot_sina() -> pd.DataFrame:
+    """新浪全 A 股实时快照（无缓存），归一化为英文列。
+
+    返回列：code, name, price, change_pct, change_amount, open, high, low,
+    prev_close, volume, amount。新浪源无 turnover/pe/pb/total_mv。
+    """
+    df = _ak_retry(ak.stock_zh_a_spot)()
+    if df is None or df.empty:
+        return df
+    out = pd.DataFrame({
+        "code": df["代码"].map(_sina_to_std_code),
+        "name": df["名称"].astype(str),
+        "price": pd.to_numeric(df["最新价"], errors="coerce"),
+        "change_amount": pd.to_numeric(df["涨跌额"], errors="coerce"),
+        "change_pct": pd.to_numeric(df["涨跌幅"], errors="coerce"),
+        "prev_close": pd.to_numeric(df["昨收"], errors="coerce"),
+        "open": pd.to_numeric(df["今开"], errors="coerce"),
+        "high": pd.to_numeric(df["最高"], errors="coerce"),
+        "low": pd.to_numeric(df["最低"], errors="coerce"),
+        "volume": pd.to_numeric(df["成交量"], errors="coerce"),
+        "amount": pd.to_numeric(df["成交额"], errors="coerce"),
+    })
+    # 停牌/无成交时最新价为 0，无法参与统计
+    return out[out["price"] > 0].reset_index(drop=True)
+
+
+def _fetch_index_spot_sina() -> pd.DataFrame:
+    """新浪指数实时快照（无缓存）。返回列：code, name, price, change_pct。"""
+    df = _ak_retry(ak.stock_zh_index_spot_sina)()
+    if df is None or df.empty:
+        return df
+    return pd.DataFrame({
+        "code": df["代码"].map(_sina_to_std_code),
+        "name": df["名称"].astype(str),
+        "price": pd.to_numeric(df["最新价"], errors="coerce"),
+        "change_pct": pd.to_numeric(df["涨跌幅"], errors="coerce"),
+    })
+
+
+def _fetch_sector_spot_sina() -> pd.DataFrame:
+    """新浪行业板块快照（无缓存），自带领涨股。
+
+    返回列：name, change_pct, leader, leader_pct。
+    """
+    df = _ak_retry(ak.stock_sector_spot)(indicator="新浪行业")
+    if df is None or df.empty:
+        return df
+    return pd.DataFrame({
+        "name": df["板块"].astype(str),
+        "change_pct": pd.to_numeric(df["涨跌幅"], errors="coerce"),
+        "leader": df["股票名称"].astype(str),
+        "leader_pct": pd.to_numeric(df["个股-涨跌幅"], errors="coerce"),
+    })
+
+
+def _cached_spot() -> pd.DataFrame:
+    """带 TTL 的全 A 股快照缓存（新浪源）。"""
     now = time.time()
     with _spot_cache_lock:
         entry = _spot_cache.get("spot")
         if entry and (now - entry[0]) < _CACHE_TTL:
-            logger.debug("复用 stock_zh_a_spot_em 缓存（age=%.1fs）", now - entry[0])
+            logger.debug("复用新浪全 A 快照缓存（age=%.1fs）", now - entry[0])
             return entry[1].copy()
-    df = _ak_retry(ak.stock_zh_a_spot_em)()
+    df = _fetch_spot_sina()
     if df is None or df.empty:
         return df
     with _spot_cache_lock:
@@ -85,25 +148,10 @@ def _cached_spot_em() -> pd.DataFrame:
     return df.copy()
 
 
-def _cached_index_spot_em() -> pd.DataFrame:
-    """带 TTL 的指数快照缓存。"""
-    now = time.time()
-    with _spot_cache_lock:
-        entry = _spot_cache.get("index")
-        if entry and (now - entry[0]) < _CACHE_TTL:
-            return entry[1].copy()
-    df = _ak_retry(ak.stock_zh_index_spot_em)()
-    if df is None or df.empty:
-        return df
-    with _spot_cache_lock:
-        _spot_cache["index"] = (time.time(), df)
-    return df.copy()
-
-
 def _cached_generic(key: str, fetch: Callable[[], pd.DataFrame]) -> pd.DataFrame:
-    """带 TTL 的通用快照缓存，供板块/北向等独立 HTTP 接口复用。
+    """带 TTL 的通用快照缓存，供指数/板块等独立 HTTP 接口复用。
 
-    与 _cached_spot_em 同样的锁/过期机制，避免每次大盘概览都裸打 akshare。
+    与 _cached_spot 同样的锁/过期机制，避免每次大盘概览都裸打 akshare。
     """
     now = time.time()
     with _spot_cache_lock:
@@ -197,25 +245,9 @@ class AkShareProvider(DataProvider):
     # ─── 日线历史 ────────────────────────────────────────────
 
     def get_daily_history(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
-        pure_code = code.split(".")[0]
-        if detect_asset_type(code) == "etf":
-            df = _ak_retry(ak.fund_etf_hist_em)(
-                symbol=pure_code, period="daily",
-                start_date=start_date, end_date=end_date, adjust="qfq",
-            )
-        else:
-            df = _ak_retry(ak.stock_zh_a_hist)(
-                symbol=pure_code, period="daily",
-                start_date=start_date, end_date=end_date, adjust="qfq",
-            )
-        df = df.rename(columns={
-            "日期": "trade_date", "开盘": "open", "收盘": "close",
-            "最高": "high", "最低": "low", "成交量": "volume",
-            "成交额": "amount", "换手率": "turnover",
-        })
-        df["code"] = code
-        df["trade_date"] = pd.to_datetime(df["trade_date"]).dt.date
-        return df[["code", "trade_date", "open", "high", "low", "close", "volume", "amount", "turnover"]]
+        # akshare 侧日线历史只有东财源（stock_zh_a_hist / fund_etf_hist_em），
+        # 易封禁已停用；抛错让 failover 落到 Tushare。
+        raise DataFetchError("akshare 日线历史(东财)已停用，请使用 Tushare")
 
     # ─── 股票列表 ────────────────────────────────────────────
 
@@ -227,13 +259,8 @@ class AkShareProvider(DataProvider):
     # ─── 基金净值 ────────────────────────────────────────────
 
     def get_fund_nav(self, code: str) -> pd.DataFrame:
-        df = _ak_retry(ak.fund_open_fund_info_em)(symbol=code, indicator="单位净值走势")
-        df = df.rename(columns={
-            "净值日期": "nav_date", "单位净值": "nav", "日增长率": "daily_return",
-        })
-        df["code"] = code
-        df["nav_date"] = pd.to_datetime(df["nav_date"]).dt.date
-        return df
+        # fund_open_fund_info_em 为东财源，已停用；failover 到 Tushare。
+        raise DataFetchError("akshare 基金净值(东财)已停用，请使用 Tushare")
 
     # ─── 基金基本信息 ────────────────────────────────────────
 
@@ -252,7 +279,7 @@ class AkShareProvider(DataProvider):
     # ─── 大盘指数 ────────────────────────────────────────────
 
     def get_main_indices(self) -> list[IndexQuote]:
-        df = _cached_index_spot_em()
+        df = _cached_generic("index", _fetch_index_spot_sina)
         target = {
             "上证指数": "000001",
             "深证成指": "399001",
@@ -261,26 +288,26 @@ class AkShareProvider(DataProvider):
         }
         result = []
         for _, row in df.iterrows():
-            name = row.get("名称", "")
+            name = row.get("name", "")
             if name in target:
                 result.append(IndexQuote(
                     code=target[name],
                     name=name,
-                    price=float(row.get("最新价", 0)),
-                    change_pct=float(row.get("涨跌幅", 0)),
+                    price=float(row.get("price", 0)),
+                    change_pct=float(row.get("change_pct", 0)),
                 ))
         return result
 
     # ─── 涨跌统计 ────────────────────────────────────────────
 
     def get_market_stats(self) -> MarketStats:
-        df = _cached_spot_em()
+        df = _cached_spot()
         total = len(df)
-        up = len(df[df["涨跌幅"] > 0])
-        down = len(df[df["涨跌幅"] < 0])
+        up = len(df[df["change_pct"] > 0])
+        down = len(df[df["change_pct"] < 0])
         flat = total - up - down
-        limit_up = len(df[df["涨跌幅"] >= 9.9])
-        limit_down = len(df[df["涨跌幅"] <= -9.9])
+        limit_up = len(df[df["change_pct"] >= 9.9])
+        limit_down = len(df[df["change_pct"] <= -9.9])
         return MarketStats(
             total=total, up=up, down=down, flat=flat,
             limit_up=limit_up, limit_down=limit_down,
@@ -289,79 +316,59 @@ class AkShareProvider(DataProvider):
     # ─── 板块排行 ────────────────────────────────────────────
 
     def get_sector_rankings(self, top_n: int = 5) -> tuple[list[SectorRank], list[SectorRank]]:
-        df = _cached_generic("sector_board", _ak_retry(ak.stock_board_industry_name_em))
-        # 按涨跌幅排序
-        df = df.sort_values("涨跌幅", ascending=False)
+        df = _cached_generic("sector_board", _fetch_sector_spot_sina)
+        df = df.sort_values("change_pct", ascending=False)
         top_up = []
         for _, r in df.head(top_n).iterrows():
             top_up.append(SectorRank(
-                name=str(r.get("板块名称", "")),
-                change_pct=float(r.get("涨跌幅", 0)),
-                leader=str(r.get("领涨股票", "")),
-                leader_pct=float(r.get("领涨股票-涨跌幅", 0)),
+                name=str(r.get("name", "")),
+                change_pct=float(r.get("change_pct", 0)),
+                leader=str(r.get("leader", "")),
+                leader_pct=float(r.get("leader_pct", 0)),
             ))
         top_down = []
         for _, r in df.tail(top_n).iterrows():
             top_down.append(SectorRank(
-                name=str(r.get("板块名称", "")),
-                change_pct=float(r.get("涨跌幅", 0)),
-                leader=str(r.get("领涨股票", "")),
-                leader_pct=float(r.get("领涨股票-涨跌幅", 0)),
+                name=str(r.get("name", "")),
+                change_pct=float(r.get("change_pct", 0)),
+                leader=str(r.get("leader", "")),
+                leader_pct=float(r.get("leader_pct", 0)),
             ))
         return top_up, top_down
 
     # ─── 两市总成交额 ────────────────────────────────────────
 
     def get_total_turnover(self) -> float:
-        df = _cached_spot_em()
-        total_amount = df["成交额"].sum()
+        df = _cached_spot()
+        total_amount = df["amount"].sum()
         return round(total_amount / 1e8, 2)  # 转亿元
 
     # ─── 北向资金 ────────────────────────────────────────────
 
     def get_northbound_flow(self) -> dict:
-        df = _cached_generic("northbound", _ak_retry(ak.stock_hsgt_fund_flow_summary_em))
-        if df is None or df.empty:
-            return {"total": 0, "sh_connect": 0, "sz_connect": 0, "date": ""}
-        # 筛选北向资金（沪股通 + 深股通）
-        north = df[df["板块"].isin(["沪股通", "深股通"])]
-        sh_flow = 0.0
-        sz_flow = 0.0
-        trade_date = ""
-        for _, row in north.iterrows():
-            net = float(row.get("成交净买额", 0))
-            if row.get("板块") == "沪股通":
-                sh_flow = net
-            else:
-                sz_flow = net
-            if not trade_date:
-                trade_date = str(row.get("交易日", ""))
-        return {
-            "total": round(sh_flow + sz_flow, 2),
-            "sh_connect": round(sh_flow, 2),
-            "sz_connect": round(sz_flow, 2),
-            "date": trade_date,
-        }
+        # 唯一来源 stock_hsgt_fund_flow_summary_em 为东财接口，已停用。
+        # 抛错由工具层字段级 northbound_error 兜底。
+        raise DataFetchError("北向资金数据源(东财)已停用")
 
     # ─── 涨跌幅 Top N ────────────────────────────────────────
 
     def get_top_movers(self, top_n: int = 5) -> tuple[list[TopMover], list[TopMover]]:
-        df = _cached_spot_em()
-        df = df.sort_values("涨跌幅", ascending=False)
+        df = _cached_spot()
+        df = df.sort_values("change_pct", ascending=False)
         gainers = []
         for _, r in df.head(top_n).iterrows():
             gainers.append(TopMover(
-                code=str(r.get("代码", "")),
-                name=str(r.get("名称", "")),
-                price=float(r.get("最新价", 0)),
-                change_pct=float(r.get("涨跌幅", 0)),
+                code=str(r.get("code", "")),
+                name=str(r.get("name", "")),
+                price=float(r.get("price", 0)),
+                change_pct=float(r.get("change_pct", 0)),
             ))
         losers = []
         for _, r in df.tail(top_n).iterrows():
             losers.append(TopMover(
-                code=str(r.get("代码", "")),
-                name=str(r.get("名称", "")),
-                price=float(r.get("最新价", 0)),
-                change_pct=float(r.get("涨跌幅", 0)),
+                code=str(r.get("code", "")),
+                name=str(r.get("name", "")),
+                price=float(r.get("price", 0)),
+                change_pct=float(r.get("change_pct", 0)),
             ))
         return gainers, losers

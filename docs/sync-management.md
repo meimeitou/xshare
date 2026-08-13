@@ -23,6 +23,7 @@ XShare 通过 SQLite `sync_config` + `sync_task_queue` 管理同步任务；覆�
 | `daily_basic` | 交易日 17:00 | Tushare | `stock_daily_basic` | 全市场 PE/PB |
 | `finance` | interval（默认周） | Tushare | `stock_finance` | 分片 + 水位断点 |
 | `fund_nav` | 交易日 17:00 | Tushare | `fund_nav` | 关注列表 / fund_basic |
+| `quote` | interval（默认 5 分钟，仅交易时段 09:25-11:35 / 12:55-15:10 入队） | AkShare 新浪 | `quote_snapshot` / `index_snapshot` / `sector_snapshot` | 实时行情快照；无需 `TUSHARE_TOKEN`；保留 `XSHARE_QUOTE_RETAIN_DAYS` 天 |
 
 ## 启动自检
 

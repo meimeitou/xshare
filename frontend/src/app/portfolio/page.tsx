@@ -304,7 +304,7 @@ function AddTradeForm({
           </div>
 
           {error && (
-            <p className="text-xs" style={{ color: "var(--down)" }}>
+            <p className="text-xs" style={{ color: "var(--danger)" }}>
               {error}
             </p>
           )}
@@ -502,7 +502,7 @@ export default function PortfolioPage() {
                 </span>
                 <button
                   onClick={() => handleDelete(r.id)}
-                  className="flex items-center justify-center w-7 h-7 rounded transition-colors hover:bg-[color-mix(in_srgb,var(--down)_15%,transparent)]"
+                  className="flex items-center justify-center w-7 h-7 rounded transition-colors hover:bg-[color-mix(in_srgb,var(--danger)_15%,transparent)]"
                   style={{
                     background: "none",
                     border: "none",

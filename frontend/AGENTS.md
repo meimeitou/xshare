@@ -1,8 +1,8 @@
-<\!-- BEGIN:nextjs-agent-rules -->
+<!-- BEGIN:nextjs-agent-rules -->
 # This is NOT the Next.js you know
 
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
-<\!-- END:nextjs-agent-rules -->
+<!-- END:nextjs-agent-rules -->
 
 # XShare Frontend
 
@@ -29,8 +29,10 @@ Next.js 16 (App Router) dashboard for the XShare financial data MCP server.
 --text-muted  #a1a1aa  secondary text
 --text-dim    #71717a  tertiary / labels
 --accent      #00d8d6  electric cyan — the one accent color
---up          #22c55e  price up / positive
---down        #ef4444  price down / negative
+--up          #d64545  price up / positive (A-share convention: red = up)
+--down        #0f9f62  price down / negative (A-share convention: green = down)
+--success     #0f9f62  success / ok (green)
+--danger      #d64545  error / destructive (red)
 --radius      6px      corner radius (consistent everywhere)
 ```
 
@@ -60,7 +62,7 @@ Key endpoints: `/api/market/overview`, `/api/market/mainline`, `/api/stock/resol
 - All data-fetching pages are `"use client"` + SWR. No `fetch` in Server Components (data is too dynamic).
 - `StockChart` (`src/components/StockChart.tsx`) is a client-only leaf component — never import it from a Server Component without `dynamic`.
 - NEVER add `window.addEventListener("scroll", ...)` — use Motion `useScroll()` or IntersectionObserver.
-- One accent color: `--accent`. Red/green (`--up`/`--down`) are semantic price colors only.
+- One accent color: `--accent`. Red/green (`--up`/`--down`) are semantic PRICE colors only - A-share convention: red = up, green = down. Non-price success/error states MUST use `--success`/`--danger` instead, so they don't flip with price direction.
 - Numbers displayed in data tables/quotes use `font-family: var(--font-geist-mono)` (add class `mono`).
 - ZERO em-dashes anywhere. Use hyphens or restructure the sentence.
 - Tailwind v4 gotcha: do NOT add `tailwindcss` plugin to `postcss.config.js` — the project uses `@tailwindcss/postcss`.

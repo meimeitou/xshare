@@ -30,6 +30,8 @@ Endpoints 一览:
   POST /api/sync/tasks/{id}/cancel
   PATCH /api/sync/jobs/{job}/config  body: {enabled?, interval_minutes?}
   GET  /api/health
+
+API 文档: /docs（本地 Swagger UI，不依赖外网 CDN）
 """
 
 import json
@@ -41,11 +43,22 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from swagger_ui_bundle import swagger_ui_path
 
 logger = logging.getLogger(__name__)
 _queue_tasks: list[asyncio.Task] = []
+
+_OPENAPI_TAGS = [
+    {"name": "Market", "description": "大盘概览、主线、涨跌幅、板块"},
+    {"name": "Stock", "description": "标的列表、解析、行情、指标、基本面、新闻"},
+    {"name": "Portfolio", "description": "持仓汇总与交易记录"},
+    {"name": "Sync", "description": "同步任务状态、入队、水位、历史"},
+    {"name": "Health", "description": "服务健康检查"},
+]
 
 
 def _cors_allow_origins() -> list[str]:
@@ -95,7 +108,16 @@ async def _lifespan(app: FastAPI):
             logger.debug("db close on shutdown: %s", exc)
 
 
-app = FastAPI(title="XShare Web API", version="0.1.0", lifespan=_lifespan)
+app = FastAPI(
+    title="XShare Web API",
+    version="0.1.0",
+    description="XShare 金融分析 REST API（MCP 工具的 HTTP 包装）。Swagger：`/docs`。",
+    openapi_tags=_OPENAPI_TAGS,
+    docs_url=None,
+    lifespan=_lifespan,
+)
+# swagger-ui-bundle 4.x 只认 openapi 3.0.n；FastAPI 默认 3.1.0 会报 version field 错误
+app.openapi_version = "3.0.2"
 
 app.add_middleware(
     CORSMiddleware,
@@ -105,6 +127,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 本地托管 Swagger UI，避免默认 CDN 在国内空白页
+app.mount("/static/swagger", StaticFiles(directory=str(swagger_ui_path)), name="swagger-ui")
+
+
+@app.get("/docs", include_in_schema=False)
+async def swagger_ui():
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} - Swagger UI",
+        swagger_js_url="/static/swagger/swagger-ui-bundle.js",
+        swagger_css_url="/static/swagger/swagger-ui.css",
+        swagger_favicon_url="/static/swagger/favicon-32x32.png",
+    )
 
 
 @app.exception_handler(Exception)
@@ -151,31 +187,31 @@ async def _invoke_tool(tool_fn, args: dict | None = None) -> str:
 # Market
 # ---------------------------------------------------------------------------
 
-@app.get("/api/market/overview")
+@app.get("/api/market/overview", tags=["Market"], summary="大盘概览")
 async def market_overview_endpoint():
     from xshare.tools.market_overview import market_overview
     return _parse(await _invoke_tool(market_overview, {}))
 
 
-@app.get("/api/market/mainline")
+@app.get("/api/market/mainline", tags=["Market"], summary="市场主线")
 async def market_mainline_endpoint():
     from xshare.tools.market_mainline import market_mainline
     return _parse(await _invoke_tool(market_mainline, {}))
 
 
-@app.get("/api/market/top-movers")
+@app.get("/api/market/top-movers", tags=["Market"], summary="涨跌幅榜")
 async def market_top_movers_endpoint(top_n: int = Query(5, ge=1, le=50)):
     from xshare.tools.market_top_movers import market_top_movers
     return _parse(await _invoke_tool(market_top_movers, {"top_n": top_n}))
 
 
-@app.get("/api/market/sectors")
+@app.get("/api/market/sectors", tags=["Market"], summary="板块涨跌")
 async def market_sectors_endpoint(top_n: int = Query(5, ge=1, le=50)):
     from xshare.tools.market_sectors import market_sectors
     return _parse(await _invoke_tool(market_sectors, {"top_n": top_n}))
 
 
-@app.get("/api/market/mainline-stocks")
+@app.get("/api/market/mainline-stocks", tags=["Market"], summary="主线强势股")
 async def market_mainline_stocks_endpoint(
     strong_limit: int = Query(10, ge=1, le=50),
     sector_top_n: int = Query(8, ge=1, le=30),
@@ -191,7 +227,7 @@ async def market_mainline_stocks_endpoint(
 # Stock
 # ---------------------------------------------------------------------------
 
-@app.get("/api/stock/list")
+@app.get("/api/stock/list", tags=["Stock"], summary="标的列表")
 async def stock_list_endpoint(
     q: str = Query("", description="代码或名称过滤"),
     type: str | None = Query(None, alias="type"),
@@ -278,19 +314,19 @@ async def stock_list_endpoint(
         return {"items": items, "total": total, "limit": limit, "offset": offset}
     return await asyncio.to_thread(query)
 
-@app.get("/api/stock/resolve")
+@app.get("/api/stock/resolve", tags=["Stock"], summary="模糊解析标的代码")
 async def stock_resolve_endpoint(q: str = Query(..., description="模糊搜索关键词")):
     from xshare.tools.stock_resolve import stock_resolve
     return _parse(await _invoke_tool(stock_resolve, {"query": q}))
 
 
-@app.get("/api/stock/{code}/quote")
+@app.get("/api/stock/{code}/quote", tags=["Stock"], summary="实时/最新行情")
 async def stock_quote_endpoint(code: str):
     from xshare.tools.stock_quote import stock_quote
     return _parse(await _invoke_tool(stock_quote, {"code": code}))
 
 
-@app.get("/api/stock/{code}/indicators")
+@app.get("/api/stock/{code}/indicators", tags=["Stock"], summary="技术指标")
 async def stock_indicators_endpoint(
     code: str,
     indicators: str = Query("MA,MACD,RSI", description="逗号分隔的指标列表"),
@@ -304,13 +340,13 @@ async def stock_indicators_endpoint(
     }))
 
 
-@app.get("/api/stock/{code}/fundamentals")
+@app.get("/api/stock/{code}/fundamentals", tags=["Stock"], summary="基本面数据")
 async def stock_fundamentals_endpoint(code: str):
     from xshare.tools.stock_fundamentals import stock_fundamentals
     return _parse(await _invoke_tool(stock_fundamentals, {"code": code}))
 
 
-@app.get("/api/stock/{code}/news")
+@app.get("/api/stock/{code}/news", tags=["Stock"], summary="个股新闻")
 async def stock_news_endpoint(code: str, days: int = Query(7, ge=1, le=90)):
     from xshare.tools.stock_news import stock_news
     return _parse(await _invoke_tool(stock_news, {"code": code, "days": days}))
@@ -329,20 +365,20 @@ class PortfolioAction(BaseModel):
     memo: str | None = None
 
 
-@app.get("/api/portfolio")
+@app.get("/api/portfolio", tags=["Portfolio"], summary="持仓汇总")
 async def portfolio_summary_endpoint():
     from xshare.tools.portfolio import portfolio_summary
     return _parse(await _invoke_tool(portfolio_summary, {}))
 
 
-@app.post("/api/portfolio")
+@app.post("/api/portfolio", tags=["Portfolio"], summary="新增/更新持仓交易")
 async def portfolio_update_endpoint(body: PortfolioAction):
     from xshare.tools.portfolio import portfolio_update
     args = {k: v for k, v in body.model_dump().items() if v is not None}
     return _parse(await _invoke_tool(portfolio_update, args))
 
 
-@app.delete("/api/portfolio/{record_id}")
+@app.delete("/api/portfolio/{record_id}", tags=["Portfolio"], summary="删除持仓记录")
 async def portfolio_delete_endpoint(record_id: int):
     from xshare.tools.portfolio import portfolio_update
     return _parse(await _invoke_tool(portfolio_update, {"action": "delete", "id": record_id}))
@@ -375,13 +411,13 @@ class SyncCleanupBody(BaseModel):
     retain_count: int | None = None
 
 
-@app.get("/api/sync/jobs")
+@app.get("/api/sync/jobs", tags=["Sync"], summary="同步任务状态")
 async def sync_jobs_endpoint():
     from xshare.tools.sync_job import sync_job
     return _parse(await _invoke_tool(sync_job, {"action": "status"}))
 
 
-@app.get("/api/sync/coverage")
+@app.get("/api/sync/coverage", tags=["Sync"], summary="数据覆盖度")
 async def sync_coverage_endpoint(
     lookback_trading_days: int | None = Query(None, ge=1, le=500),
 ):
@@ -392,7 +428,7 @@ async def sync_coverage_endpoint(
     return _parse(await _invoke_tool(sync_job, args))
 
 
-@app.get("/api/sync/watermarks")
+@app.get("/api/sync/watermarks", tags=["Sync"], summary="同步水位")
 async def sync_watermarks_endpoint(
     dataset: str | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
@@ -404,7 +440,7 @@ async def sync_watermarks_endpoint(
     return _parse(await _invoke_tool(sync_job, args))
 
 
-@app.post("/api/sync/jobs/{job}/run")
+@app.post("/api/sync/jobs/{job}/run", tags=["Sync"], summary="立即运行同步任务")
 async def sync_job_run_endpoint(job: str, body: SyncEnqueueBody | None = None):
     from xshare.tools.sync_job import sync_job
     args: dict = {"action": "run", "job": job}
@@ -413,7 +449,7 @@ async def sync_job_run_endpoint(job: str, body: SyncEnqueueBody | None = None):
     return _parse(await _invoke_tool(sync_job, args))
 
 
-@app.post("/api/sync/jobs/{job}/enqueue")
+@app.post("/api/sync/jobs/{job}/enqueue", tags=["Sync"], summary="入队同步任务")
 async def sync_job_enqueue_endpoint(job: str, body: SyncEnqueueBody | None = None):
     from xshare.tools.sync_job import sync_job
     args: dict = {"action": "enqueue", "job": job}
@@ -422,7 +458,7 @@ async def sync_job_enqueue_endpoint(job: str, body: SyncEnqueueBody | None = Non
     return _parse(await _invoke_tool(sync_job, args))
 
 
-@app.post("/api/sync/jobs/all/enqueue")
+@app.post("/api/sync/jobs/all/enqueue", tags=["Sync"], summary="入队全部同步任务")
 async def sync_job_enqueue_all_endpoint(body: SyncEnqueueBody | None = None):
     from xshare.tools.sync_job import sync_job
     args: dict = {"action": "enqueue", "job": "all"}
@@ -431,7 +467,7 @@ async def sync_job_enqueue_all_endpoint(body: SyncEnqueueBody | None = None):
     return _parse(await _invoke_tool(sync_job, args))
 
 
-@app.get("/api/sync/history")
+@app.get("/api/sync/history", tags=["Sync"], summary="同步历史")
 async def sync_history_endpoint(
     job: str = Query("all"),
     limit: int = Query(20, ge=1, le=200),
@@ -440,7 +476,7 @@ async def sync_history_endpoint(
     return _parse(await _invoke_tool(sync_job, {"action": "history", "job": job, "limit": limit}))
 
 
-@app.post("/api/sync/history/cleanup")
+@app.post("/api/sync/history/cleanup", tags=["Sync"], summary="清理同步历史")
 async def sync_history_cleanup_endpoint(body: SyncCleanupBody | None = None):
     from xshare.tools.sync_job import sync_job
     args: dict = {"action": "cleanup"}
@@ -452,7 +488,7 @@ async def sync_history_cleanup_endpoint(body: SyncCleanupBody | None = None):
     return _parse(await _invoke_tool(sync_job, args))
 
 
-@app.get("/api/sync/tasks/{task_id}")
+@app.get("/api/sync/tasks/{task_id}", tags=["Sync"], summary="任务详情")
 async def sync_task_detail_endpoint(task_id: int):
     from xshare.data.task_queue import get_task
     task = get_task(task_id)
@@ -461,13 +497,13 @@ async def sync_task_detail_endpoint(task_id: int):
     return task
 
 
-@app.post("/api/sync/tasks/{task_id}/cancel")
+@app.post("/api/sync/tasks/{task_id}/cancel", tags=["Sync"], summary="取消任务")
 async def sync_task_cancel_endpoint(task_id: int):
     from xshare.tools.sync_job import sync_job
     return _parse(await _invoke_tool(sync_job, {"action": "cancel", "task_id": task_id}))
 
 
-@app.patch("/api/sync/jobs/{job}/config")
+@app.patch("/api/sync/jobs/{job}/config", tags=["Sync"], summary="更新任务配置")
 async def sync_job_config_endpoint(job: str, body: SyncJobConfig):
     from xshare.tools.sync_job import sync_job
     args: dict = {"action": "config", "job": job}
@@ -484,6 +520,6 @@ async def sync_job_config_endpoint(job: str, body: SyncJobConfig):
 # Health
 # ---------------------------------------------------------------------------
 
-@app.get("/api/health")
+@app.get("/api/health", tags=["Health"], summary="健康检查")
 async def health():
     return {"status": "ok"}

@@ -44,6 +44,7 @@ from xshare.data.sync_config import (
     INDEX_BASIC_JOB,
     INDEX_DAILY_JOB,
     NEWS_JOB,
+    QUOTE_JOB,
     STOCK_JOB,
     TRADE_CAL_JOB,
     _BLOCKING_HANDLERS,
@@ -424,7 +425,7 @@ async def run_job(job: str, payload: dict | None = None) -> dict:
             )
             return {"job": job, "status": "skipped", "reason": reason, "started_at": started}
 
-        needs_token = job not in (NEWS_JOB,)
+        needs_token = job not in (NEWS_JOB, QUOTE_JOB)
         if needs_token and not os.environ.get("TUSHARE_TOKEN"):
             reason = "TUSHARE_TOKEN 未配置"
             _set_state(job, "skipped", reason)

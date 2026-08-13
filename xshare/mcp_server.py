@@ -187,7 +187,7 @@ TOOLS: dict[str, tuple] = {
                 "enum": [
                     "news", "stock_basic", "daily", "index_basic", "index_daily",
                     "etf_basic", "fund_daily",
-                    "trade_cal", "daily_basic", "finance", "fund_nav", "all",
+                    "trade_cal", "daily_basic", "finance", "fund_nav", "quote", "all",
                 ],
                 "default": "all",
                 "description": "目标任务（status/enqueue/history 可用 all）",

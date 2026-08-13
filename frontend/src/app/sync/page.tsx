@@ -94,9 +94,9 @@ function fmtTs(value?: string | null): string {
 /* ------ Status Badge ------------------------------------------------------- */
 function StatusBadge({ status }: { status: string }) {
   const config: Record<string, { color: string; icon: React.ReactNode }> = {
-    success: { color: "var(--up)", icon: <Check size={11} weight="bold" /> },
-    ok: { color: "var(--up)", icon: <Check size={11} weight="bold" /> },
-    error: { color: "var(--down)", icon: <X size={11} weight="bold" /> },
+    success: { color: "var(--success)", icon: <Check size={11} weight="bold" /> },
+    ok: { color: "var(--success)", icon: <Check size={11} weight="bold" /> },
+    error: { color: "var(--danger)", icon: <X size={11} weight="bold" /> },
     skipped: { color: "var(--text-muted)", icon: null },
     running: {
       color: "var(--accent)",
@@ -156,15 +156,15 @@ function CoverageCard({
           <p className="mono text-sm font-medium" style={{ color: "var(--text)" }}>
             {coverage.trading_days_in_db} / {coverage.target_days} 交易日
             {coverage.sufficient ? (
-              <span className="ml-2 text-xs" style={{ color: "var(--up)" }}>
+              <span className="ml-2 text-xs" style={{ color: "var(--success)" }}>
                 已满足
               </span>
             ) : perCode && perCode.under > 0 ? (
-              <span className="ml-2 text-xs" style={{ color: "var(--down)" }}>
+              <span className="ml-2 text-xs" style={{ color: "var(--danger)" }}>
                 {perCode.under} 个 {codeLabel}数据不足
               </span>
             ) : (
-              <span className="ml-2 text-xs" style={{ color: "var(--down)" }}>
+              <span className="ml-2 text-xs" style={{ color: "var(--danger)" }}>
                 缺约 {coverage.missing_estimate} 日
               </span>
             )}
@@ -193,7 +193,7 @@ function CoverageCard({
           className="h-full transition-all"
           style={{
             width: `${pct}%`,
-            background: coverage.sufficient ? "var(--up)" : "var(--accent)",
+            background: coverage.sufficient ? "var(--success)" : "var(--accent)",
           }}
         />
       </div>
@@ -209,7 +209,7 @@ function CoverageCard({
           }{" "}
           达标
           {perCode.under > 0 && (
-            <span style={{ color: "var(--down)" }}>
+            <span style={{ color: "var(--danger)" }}>
               {" "}（{perCode.under} 不足）
             </span>
           )}
@@ -402,7 +402,7 @@ function JobsTable({
                   {job.job}
                 </span>
                 {job.last_error && (
-                  <span className="text-[11px] truncate max-w-[220px]" style={{ color: "var(--down)" }}>
+                  <span className="text-[11px] truncate max-w-[220px]" style={{ color: "var(--danger)" }}>
                     {job.last_error}
                   </span>
                 )}
@@ -419,7 +419,7 @@ function JobsTable({
                 )}
                 <span
                   className="text-[11px]"
-                  style={{ color: job.enabled ? "var(--up)" : "var(--text-dim)" }}
+                style={{ color: job.enabled ? "var(--success)" : "var(--text-dim)" }}
                 >
                   {job.enabled ? "已启用" : "已停用"}
                 </span>
@@ -451,10 +451,10 @@ function JobsTable({
                   className="flex items-center gap-1 px-2 py-1 rounded text-[11px]"
                   style={{
                     background: job.enabled
-                      ? "color-mix(in srgb,var(--down) 12%,var(--bg-raised))"
+                      ? "color-mix(in srgb,var(--danger) 12%,var(--bg-raised))"
                       : "color-mix(in srgb,var(--accent) 15%,var(--bg-raised))",
                     border: "1px solid var(--border)",
-                    color: job.enabled ? "var(--down)" : "var(--accent)",
+                    color: job.enabled ? "var(--danger)" : "var(--accent)",
                     cursor: busy ? "not-allowed" : "pointer",
                   }}
                 >
@@ -531,9 +531,9 @@ function QueueTable({
   const summary = [
     { key: "queued", label: "排队", color: "var(--text-muted)" },
     { key: "running", label: "执行中", color: "var(--accent)" },
-    { key: "success", label: "成功", color: "var(--up)" },
+    { key: "success", label: "成功", color: "var(--success)" },
     { key: "skipped", label: "跳过", color: "var(--text-muted)" },
-    { key: "error", label: "失败", color: "var(--down)" },
+    { key: "error", label: "失败", color: "var(--danger)" },
     { key: "cancelled", label: "已取消", color: "var(--text-dim)" },
   ];
 
@@ -599,7 +599,7 @@ function QueueTable({
                   className="text-[11px] px-2 py-0.5 rounded"
                   style={{
                     border: "1px solid var(--border)",
-                    color: "var(--down)",
+                    color: "var(--danger)",
                     background: "none",
                     cursor: "pointer",
                   }}
@@ -738,9 +738,9 @@ function HistoryDrawer({
                       >
                         <div className="flex items-center gap-2 flex-wrap">
                           {h.status === "success" || h.status === "ok" ? (
-                            <Check size={13} style={{ color: "var(--up)" }} weight="bold" />
+                            <Check size={13} style={{ color: "var(--success)" }} weight="bold" />
                           ) : h.status === "error" ? (
-                            <Warning size={13} style={{ color: "var(--down)" }} />
+                            <Warning size={13} style={{ color: "var(--danger)" }} />
                           ) : h.status === "running" ? (
                             <ArrowsClockwise size={13} style={{ color: "var(--accent)" }} />
                           ) : (
@@ -776,7 +776,7 @@ function HistoryDrawer({
                           </p>
                         )}
                         {errorText && (
-                          <p className="text-[11px] mt-1 break-all" style={{ color: "var(--down)" }}>
+                          <p className="text-[11px] mt-1 break-all" style={{ color: "var(--danger)" }}>
                             {errorText}
                           </p>
                         )}
@@ -927,9 +927,9 @@ export default function SyncPage() {
         <div
           className="px-4 py-3 text-sm rounded flex items-center justify-between gap-2"
           style={{
-            background: "color-mix(in srgb,var(--down) 10%,transparent)",
-            border: "1px solid color-mix(in srgb,var(--down) 30%,transparent)",
-            color: "var(--down)",
+            background: "color-mix(in srgb,var(--danger) 10%,transparent)",
+            border: "1px solid color-mix(in srgb,var(--danger) 30%,transparent)",
+            color: "var(--danger)",
           }}
         >
           <span>{error}</span>

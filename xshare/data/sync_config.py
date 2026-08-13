@@ -29,6 +29,7 @@ TRADE_CAL_JOB = "trade_cal"
 DAILY_BASIC_JOB = "daily_basic"
 FINANCE_JOB = "finance"
 FUND_NAV_JOB = "fund_nav"
+QUOTE_JOB = "quote"
 
 ALL_JOBS = (
     NEWS_JOB,
@@ -42,12 +43,16 @@ ALL_JOBS = (
     DAILY_BASIC_JOB,
     FINANCE_JOB,
     FUND_NAV_JOB,
+    QUOTE_JOB,
 )
 
 # 日历触发（非 interval）的任务：交易日 17:00 各入队一次
 CALENDAR_JOBS = frozenset({
     DAILY_JOB, INDEX_DAILY_JOB, FUND_DAILY_JOB, DAILY_BASIC_JOB, FUND_NAV_JOB,
 })
+
+# 仅交易时段运行的 interval 任务：非交易时段 interval loop 不入队
+TRADING_HOURS_JOBS = frozenset({QUOTE_JOB})
 
 # 日历任务的触发时刻（本地时间，交易日 17:00）。
 # Tushare 日线通常 15:00-16:00 入库，17:00 触发留出缓冲，确保收盘数据齐全。
@@ -139,6 +144,11 @@ JOB_META: dict[str, dict] = {
             "limit": {"type": "integer", "default": 50, "description": "本次最多同步基金数"},
         },
     },
+    QUOTE_JOB: {
+        "label": "行情快照",
+        "description": "交易时段每 5 分钟拉取新浪实时行情写入 quote/index/sector_snapshot（无需 TUSHARE_TOKEN）",
+        "params_schema": {},
+    },
 }
 
 _POLL_SECONDS = 30
@@ -214,6 +224,15 @@ def _daily_sync_window_open(now: datetime | None = None) -> bool:
         or (current.hour == _CALENDAR_TRIGGER_HOUR
             and current.minute >= _CALENDAR_TRIGGER_MINUTE)
     )
+
+
+def _in_trading_hours(now: datetime | None = None) -> bool:
+    """A 股盘中窗口：交易日 09:25-11:35 / 12:55-15:10（含集合竞价与收盘缓冲）。"""
+    current = now or datetime.now()
+    if not _is_trade_day(current.date()):
+        return False
+    t = current.time()
+    return time(9, 25) <= t <= time(11, 35) or time(12, 55) <= t <= time(15, 10)
 
 
 def check_calendar_window(
@@ -312,6 +331,7 @@ def init_sync_config() -> None:
         (DAILY_BASIC_JOB, _env_int("XSHARE_DAILY_BASIC_SYNC_INTERVAL", 1440)),
         (FINANCE_JOB, _env_int("XSHARE_FINANCE_SYNC_INTERVAL", 10080)),
         (FUND_NAV_JOB, _env_int("XSHARE_FUND_NAV_SYNC_INTERVAL", 1440)),
+        (QUOTE_JOB, _env_int("XSHARE_QUOTE_SYNC_INTERVAL", 5)),
     ]
     for job, interval in seeds:
         conn.execute(
@@ -623,6 +643,14 @@ def _sync_fund_nav_blocking(payload: dict | None = None) -> int:
     return count
 
 
+def _sync_quote_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.quote_snapshot import sync_quote_snapshot_to_db
+
+    count = sync_quote_snapshot_to_db()
+    logger.info("行情快照已同步: %d 条", count)
+    return count
+
+
 _BLOCKING_HANDLERS = {
     NEWS_JOB: _sync_news_blocking,
     STOCK_JOB: _sync_stock_blocking,
@@ -635,6 +663,7 @@ _BLOCKING_HANDLERS = {
     DAILY_BASIC_JOB: _sync_daily_basic_blocking,
     FINANCE_JOB: _sync_finance_blocking,
     FUND_NAV_JOB: _sync_fund_nav_blocking,
+    QUOTE_JOB: _sync_quote_blocking,
 }
 
 
@@ -668,6 +697,9 @@ async def _interval_loop_iteration(job: str, cfg: dict) -> None:
 
     cfg = get_one(job)
     if cfg and cfg["enabled"]:
+        if job in TRADING_HOURS_JOBS and not _in_trading_hours():
+            logger.debug("非交易时段，跳过 %s 入队", job)
+            return
         try:
             from xshare.data.task_queue import enqueue
             task_id = enqueue(job, trigger="schedule")

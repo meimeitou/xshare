@@ -305,7 +305,10 @@ class ProviderManager:
         return now.strftime("%Y%m%d")
 
     def get_realtime_quote(self, code: str) -> RealtimeQuote:
-        """实时行情 — 仅 AkShare；失败回退本地 stock_daily（不走 Tushare）。"""
+        """实时行情 — quote_snapshot 缓存优先；miss 走 AkShare（新浪）；再失败回退 stock_daily。"""
+        cached = self._latest_quote_from_cache(code)
+        if cached is not None:
+            return cached
         try:
             quote = self._call_realtime_akshare_only("get_realtime_quote", code)
             if isinstance(quote, RealtimeQuote):
@@ -609,28 +612,137 @@ class ProviderManager:
                 )
         return _row_dict()
 
+    # ─── 实时读路径：quote_snapshot 缓存优先，miss/异常回退 AkShare 实时 ──
+    # quote 同步任务（交易时段每 5 分钟）已把新浪快照写入 DuckDB；
+    # 页面/工具经这里默认吃缓存，缓存为空（未同步过）才打实时接口。
+
+    @staticmethod
+    def _latest_quote_from_cache(code: str) -> RealtimeQuote | None:
+        from xshare.data import quote_cache
+        try:
+            row = quote_cache.latest_quote(code)
+        except Exception as exc:
+            logger.debug("quote_snapshot 读取失败: %s", exc)
+            return None
+        if not row:
+            return None
+        return RealtimeQuote(
+            code=code,
+            name=str(row.get("name") or ""),
+            price=float(row.get("price") or 0),
+            change_pct=float(row.get("change_pct") or 0),
+            change_amount=float(row.get("change_amount") or 0),
+            volume=int(row.get("volume") or 0),
+            amount=float(row.get("amount") or 0),
+            high=float(row.get("high") or 0),
+            low=float(row.get("low") or 0),
+            open=float(row.get("open") or 0),
+            prev_close=float(row.get("prev_close") or 0),
+            turnover=float(row["turnover"]) if row.get("turnover") is not None else 0.0,
+            pe=float(row["pe"]) if row.get("pe") is not None else None,
+            pb=float(row["pb"]) if row.get("pb") is not None else None,
+            total_mv=float(row["total_mv"]) if row.get("total_mv") is not None else None,
+            source="quote_cache",
+            as_of=str(row.get("ts") or ""),
+            is_delayed=False,
+        )
+
+    @staticmethod
+    def _latest_spot_df() -> pd.DataFrame | None:
+        from xshare.data import quote_cache
+        try:
+            df = quote_cache.latest_spot()
+        except Exception as exc:
+            logger.debug("quote_snapshot 读取失败: %s", exc)
+            return None
+        return df if not df.empty else None
+
     def get_main_indices(self) -> list[IndexQuote]:
-        """主要指数 — 仅 AkShare；失败由调用方处理。"""
+        """主要指数 — index_snapshot 缓存优先；miss 回退 AkShare。"""
+        from xshare.data import quote_cache
+        target = {
+            "上证指数": "000001",
+            "深证成指": "399001",
+            "创业板指": "399006",
+            "科创50": "000688",
+        }
+        try:
+            rows = [r for r in quote_cache.latest_indices() if r.get("name") in target]
+            if rows:
+                return [
+                    IndexQuote(
+                        code=target[r["name"]],
+                        name=r["name"],
+                        price=float(r.get("price") or 0),
+                        change_pct=float(r.get("change_pct") or 0),
+                    )
+                    for r in rows
+                ]
+        except Exception as exc:
+            logger.debug("index_snapshot 读取失败: %s", exc)
         return self._call_realtime_akshare_only("get_main_indices")
 
     def get_market_stats(self) -> MarketStats:
-        """A 股涨跌统计 — 仅 AkShare；失败由调用方处理。"""
+        """A 股涨跌统计 — quote_snapshot 缓存优先；miss 回退 AkShare。"""
+        df = self._latest_spot_df()
+        if df is not None:
+            total = len(df)
+            up = len(df[df["change_pct"] > 0])
+            down = len(df[df["change_pct"] < 0])
+            return MarketStats(
+                total=total, up=up, down=down, flat=total - up - down,
+                limit_up=len(df[df["change_pct"] >= 9.9]),
+                limit_down=len(df[df["change_pct"] <= -9.9]),
+            )
         return self._call_realtime_akshare_only("get_market_stats")
 
     def get_sector_rankings(self, top_n: int = 5) -> tuple[list[SectorRank], list[SectorRank]]:
-        """板块涨跌排行 — 仅 AkShare；失败由调用方处理。"""
+        """板块涨跌排行 — sector_snapshot 缓存优先；miss 回退 AkShare。"""
+        from xshare.data import quote_cache
+        try:
+            rows = sorted(
+                quote_cache.latest_sectors(),
+                key=lambda r: r.get("change_pct") or 0,
+                reverse=True,
+            )
+            if rows:
+                def _mk(r: dict) -> SectorRank:
+                    return SectorRank(
+                        name=str(r.get("name") or ""),
+                        change_pct=float(r.get("change_pct") or 0),
+                        leader=str(r.get("leader") or ""),
+                        leader_pct=float(r.get("leader_pct") or 0),
+                    )
+                return [_mk(r) for r in rows[:top_n]], [_mk(r) for r in rows[-top_n:]]
+        except Exception as exc:
+            logger.debug("sector_snapshot 读取失败: %s", exc)
         return self._call_realtime_akshare_only("get_sector_rankings", top_n)
 
     def get_total_turnover(self) -> float:
-        """两市总成交额 — 仅 AkShare；失败由调用方处理。"""
+        """两市总成交额 — quote_snapshot 缓存优先；miss 回退 AkShare。"""
+        df = self._latest_spot_df()
+        if df is not None:
+            return round(float(df["amount"].sum()) / 1e8, 2)
         return self._call_realtime_akshare_only("get_total_turnover")
 
     def get_northbound_flow(self) -> dict:
-        """北向资金 — 仅 AkShare；失败由调用方处理。"""
+        """北向资金 — 东财源已停用，无缓存，直接抛错由工具层字段级兜底。"""
         return self._call_realtime_akshare_only("get_northbound_flow")
 
     def get_top_movers(self, top_n: int = 5) -> tuple[list[TopMover], list[TopMover]]:
-        """涨跌幅 Top N — 仅 AkShare；失败由调用方处理。"""
+        """涨跌幅 Top N — quote_snapshot 缓存优先；miss 回退 AkShare。"""
+        df = self._latest_spot_df()
+        if df is not None:
+            df = df.sort_values("change_pct", ascending=False)
+            def _mk(r) -> TopMover:
+                return TopMover(
+                    code=str(r["code"]), name=str(r["name"]),
+                    price=float(r["price"]), change_pct=float(r["change_pct"]),
+                )
+            return (
+                [_mk(r) for _, r in df.head(top_n).iterrows()],
+                [_mk(r) for _, r in df.tail(top_n).iterrows()],
+            )
         return self._call_realtime_akshare_only("get_top_movers", top_n)
 
     # ─── DuckDB upsert 帮助方法 ─────────────────────────────

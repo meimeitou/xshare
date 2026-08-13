@@ -248,6 +248,45 @@ CREATE TABLE IF NOT EXISTS code_meta (
     sufficient        BOOLEAN,            -- window_count >= threshold * window_expected
     updated_at        TIMESTAMP DEFAULT current_timestamp
 );
+
+-- 实时行情快照（quote 同步任务交易时段每 5 分钟写入；读路径缓存优先）
+CREATE TABLE IF NOT EXISTS quote_snapshot (
+    code          VARCHAR NOT NULL,
+    name          VARCHAR,
+    price         DOUBLE,
+    change_pct    DOUBLE,
+    change_amount DOUBLE,
+    open          DOUBLE,
+    high          DOUBLE,
+    low           DOUBLE,
+    prev_close    DOUBLE,
+    volume        DOUBLE,
+    amount        DOUBLE,
+    turnover      DOUBLE,
+    pe            DOUBLE,
+    pb            DOUBLE,
+    total_mv      DOUBLE,
+    ts            TIMESTAMP NOT NULL,
+    PRIMARY KEY (code, ts)
+);
+
+CREATE TABLE IF NOT EXISTS index_snapshot (
+    code       VARCHAR NOT NULL,
+    name       VARCHAR,
+    price      DOUBLE,
+    change_pct DOUBLE,
+    ts         TIMESTAMP NOT NULL,
+    PRIMARY KEY (code, ts)
+);
+
+CREATE TABLE IF NOT EXISTS sector_snapshot (
+    name       VARCHAR NOT NULL,
+    change_pct DOUBLE,
+    leader     VARCHAR,
+    leader_pct DOUBLE,
+    ts         TIMESTAMP NOT NULL,
+    PRIMARY KEY (name, ts)
+);
 """
 
 

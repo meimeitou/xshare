@@ -45,7 +45,8 @@ Web UI (frontend/) → FastAPI (xshare/web_server.py) → xshare/tools/
 
 | 场景 | 数据源 | 说明 |
 |------|--------|------|
-| 当天实时行情 / 大盘快照 | 仅 AkShare | 个股失败回退 `stock_daily`；大盘失败字段级 error；不回退 Tushare |
+| 当天实时行情 / 大盘快照 | quote_snapshot 缓存（quote 任务，新浪，交易时段 5 分钟） | 缓存优先；miss 回退 AkShare 新浪实时；个股再回退 `stock_daily`；北向资金（东财）已停用 |
+| 东财接口（`*_em` 等） | 禁用 | 易封禁；akshare 历史/净值走 Tushare failover |
 | 日线同步 | Tushare | 仅交易日 17:00 后执行；水位补洞 |
 | 历史数据读取 | DuckDB | local-first，默认不打外部 API |
 | 新闻 | 同花顺 7×24 → DuckDB | 默认保留 1 天 |
@@ -105,6 +106,8 @@ make logs                    # 查看日志
 | `XSHARE_TOOL_TIMEOUT` | 可选 | 单次工具调用硬超时秒数（默认 120） |
 | `XSHARE_AUTO_SYNC` | 可选 | MCP 启动时自动同步（默认 1=开启） |
 | `XSHARE_NEWS_SYNC_INTERVAL` | 可选 | 新闻同步间隔分钟（默认 15） |
+| `XSHARE_QUOTE_SYNC_INTERVAL` | 可选 | 行情快照同步间隔分钟（默认 5，仅交易时段入队） |
+| `XSHARE_QUOTE_RETAIN_DAYS` | 可选 | 行情快照保留天数（默认 5） |
 | `XSHARE_DAILY_SYNC_INTERVAL` | 可选 | 日线展示兜底间隔（日历任务实际按 17:00 触发） |
 | `XSHARE_TUSHARE_MIN_INTERVAL` | 可选 | Tushare 全局限速最小间隔秒（默认 0.25，约 240/min，低于 500/min 上限） |
 | `XSHARE_TUSHARE_RATE_RETRIES` | 可选 | 频率超限时重试次数（默认 5） |
@@ -143,6 +146,9 @@ make logs                    # 查看日志
 | `news` | `id` (URL hash) | 新闻（按 publish_time 清理，保留可配天数） |
 | `fund_nav` | `(code, nav_date)` | 基金净值 |
 | `fund_basic` | `code` | 基金基本信息 |
+| `quote_snapshot` | `(code, ts)` | A 股个股实时快照（quote 任务，新浪源） |
+| `index_snapshot` | `(code, ts)` | 指数实时快照 |
+| `sector_snapshot` | `(name, ts)` | 行业板块快照（自带领涨股） |
 
 ## SQLite 表结构（OLTP）
 
@@ -164,7 +170,7 @@ make logs                    # 查看日志
 4. **sync_job** — MCP：`status`/`watermarks`/`config`/`enqueue`/`history`/`coverage`/`cancel`/`cleanup`
 5. **sync_runtime** — MCP 与 Web 共用 worker + 定时 loop
 
-任务类型：`news`、`stock_basic`、`index_basic`、`etf_basic`、`trade_cal`、`daily`、`index_daily`、`fund_daily`、`daily_basic`、`finance`、`fund_nav`。详见 `docs/sync-management.md`。
+任务类型：`news`、`stock_basic`、`index_basic`、`etf_basic`、`trade_cal`、`daily`、`index_daily`、`fund_daily`、`daily_basic`、`finance`、`fund_nav`、`quote`（交易时段 5 分钟行情快照）。详见 `docs/sync-management.md`。
 
 ## 常见陷阱
 

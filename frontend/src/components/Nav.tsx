@@ -125,7 +125,7 @@ export function Nav() {
         >
           <span
             className="w-2 h-2 rounded-full"
-            style={{ background: healthy ? "var(--up)" : "var(--text-dim)" }}
+            style={{ background: healthy ? "var(--success)" : "var(--text-dim)" }}
           />
           <span className="text-xs mono" style={{ color: "var(--text-dim)" }}>
             {healthy ? "API ONLINE" : "API OFFLINE"}

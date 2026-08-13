@@ -3114,6 +3114,18 @@ wheels = [
 ]
 
 [[package]]
+name = "swagger-ui-bundle"
+version = "1.1.0"
+source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
+dependencies = [
+    { name = "jinja2" },
+]
+sdist = { url = "https://mirrors.aliyun.com/pypi/packages/01/e6/d8ae21087a42627c2a04a738c947825b78c26b18595704b94bd3227197a2/swagger_ui_bundle-1.1.0.tar.gz", hash = "sha256:20673c3431c8733d5d1615ecf79d9acf30cff75202acaf21a7d9c7f489714529" }
+wheels = [
+    { url = "https://mirrors.aliyun.com/pypi/packages/a2/66/8fb11445940bde7ca328d6aa23dd36b6056197d862f4bd6bb51c820c50e5/swagger_ui_bundle-1.1.0-py3-none-any.whl", hash = "sha256:f7526f7bb99923e10594c54247265839bec97e96b0438561ac86faf40d40dd57" },
+]
+
+[[package]]
 name = "tabulate"
 version = "0.10.0"
 source = { registry = "https://mirrors.aliyun.com/pypi/simple/" }
@@ -3599,6 +3611,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pypinyin" },
     { name = "python-dotenv" },
+    { name = "swagger-ui-bundle" },
     { name = "tushare" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -3623,6 +3636,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pypinyin", specifier = ">=0.52.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "swagger-ui-bundle", specifier = ">=1.1.0" },
     { name = "tushare", specifier = ">=1.4.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
 ]

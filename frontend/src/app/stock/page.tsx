@@ -26,13 +26,13 @@ function fmtSyncTime(ts?: string | null): string {
 function syncBadge(a: Asset) {
   const st = a.sync_status;
   if (st === "ok") {
-    return <span className="mono" style={{ color: "var(--up)" }}>成功</span>;
+    return <span className="mono" style={{ color: "var(--success)" }}>成功</span>;
   }
   if (st === "partial" || st === "pending") {
     return <span className="mono" style={{ color: "var(--text-dim)" }}>{st === "partial" ? "部分" : "待同步"}</span>;
   }
   if (st === "error") {
-    return <span className="mono" style={{ color: "var(--down)" }}>失败</span>;
+    return <span className="mono" style={{ color: "var(--danger)" }}>失败</span>;
   }
   return <span className="mono" style={{ color: "var(--text-dim)" }}>-</span>;
 }
