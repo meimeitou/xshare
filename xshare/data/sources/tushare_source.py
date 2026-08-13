@@ -2065,3 +2065,542 @@ def fetch_daily_basic(code: str, trade_date: str = "") -> pd.DataFrame:
     df = _pro_call("daily_basic", **kwargs)
     df = df.rename(columns={"ts_code": "code"})
     return df
+
+
+
+# ─── 资金面：moneyflow / sector_moneyflow / market_moneyflow ─────────────────
+
+
+def sync_moneyflow_to_db(trade_date: str | None = None, days: int = 1) -> int:
+    """按交易日批量同步个股资金流向到 stock_moneyflow（金额单位：万元）。"""
+    from xshare.data.db import get_conn, init_tables
+
+    pro = _get_pro()
+    conn = get_conn()
+    init_tables(conn)
+
+    cursor = datetime.strptime(trade_date, "%Y%m%d").date() if trade_date else date.today()
+    trade_days = _resolve_trade_days(cursor, days, pro)
+    fetched = 0
+    skipped = 0
+    _log_start("moneyflow", table="stock_moneyflow", days=days, dates=len(trade_days))
+
+    for idx, d in enumerate(trade_days):
+        iso = d.isoformat()
+        if idx > 0 and iso in wm.ok_keys(wm.DATASET_MONEYFLOW, since=d):
+            skipped += 1
+            _log_progress("moneyflow", "%s 跳过（水位已 ok）", iso)
+            continue
+        try:
+            df = _pro_call(
+                "moneyflow",
+                trade_date=d.strftime("%Y%m%d"),
+                fields=(
+                    "ts_code,trade_date,buy_sm_amount,sell_sm_amount,"
+                    "buy_md_amount,sell_md_amount,buy_lg_amount,sell_lg_amount,"
+                    "buy_elg_amount,sell_elg_amount,net_mf_amount"
+                ),
+            )
+            if df is None or df.empty:
+                wm.set_watermark(wm.DATASET_MONEYFLOW, d, wm.STATUS_ERROR, 0, "empty")
+                _log_progress("moneyflow", "%s 无数据", iso)
+                continue
+            df = df.rename(columns={"ts_code": "code"})
+            df["trade_date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d").dt.date
+            cols = [
+                "code", "trade_date", "buy_sm_amount", "sell_sm_amount",
+                "buy_md_amount", "sell_md_amount", "buy_lg_amount", "sell_lg_amount",
+                "buy_elg_amount", "sell_elg_amount", "net_mf_amount",
+            ]
+            df_insert = df[[c for c in cols if c in df.columns]]
+            conn.register("_mf_df", df_insert)
+            conn.execute(
+                """
+                INSERT INTO stock_moneyflow
+                    (code, trade_date, buy_sm_amount, sell_sm_amount,
+                     buy_md_amount, sell_md_amount, buy_lg_amount, sell_lg_amount,
+                     buy_elg_amount, sell_elg_amount, net_mf_amount)
+                SELECT code, trade_date, buy_sm_amount, sell_sm_amount,
+                       buy_md_amount, sell_md_amount, buy_lg_amount, sell_lg_amount,
+                       buy_elg_amount, sell_elg_amount, net_mf_amount FROM _mf_df
+                ON CONFLICT (code, trade_date) DO UPDATE SET
+                    buy_sm_amount=EXCLUDED.buy_sm_amount, sell_sm_amount=EXCLUDED.sell_sm_amount,
+                    buy_md_amount=EXCLUDED.buy_md_amount, sell_md_amount=EXCLUDED.sell_md_amount,
+                    buy_lg_amount=EXCLUDED.buy_lg_amount, sell_lg_amount=EXCLUDED.sell_lg_amount,
+                    buy_elg_amount=EXCLUDED.buy_elg_amount, sell_elg_amount=EXCLUDED.sell_elg_amount,
+                    net_mf_amount=EXCLUDED.net_mf_amount
+                """
+            )
+            conn.unregister("_mf_df")
+            fetched += len(df_insert)
+            wm.set_watermark(wm.DATASET_MONEYFLOW, d, wm.STATUS_OK, len(df_insert))
+            _log_progress("moneyflow", "%s 入库 %d 条 → stock_moneyflow", iso, len(df_insert))
+        except Exception as exc:
+            wm.set_watermark(wm.DATASET_MONEYFLOW, d, wm.STATUS_ERROR, error=str(exc))
+            raise
+    _log_done("moneyflow", "stock_moneyflow", fetched, skipped=skipped, source="tushare.moneyflow")
+    return fetched
+
+
+def sync_sector_moneyflow_to_db(trade_date: str | None = None, days: int = 1) -> int:
+    """按交易日同步板块资金流向到 sector_moneyflow（行业/概念/地域三种类型）。"""
+    from xshare.data.db import get_conn, init_tables
+
+    pro = _get_pro()
+    conn = get_conn()
+    init_tables(conn)
+
+    cursor = datetime.strptime(trade_date, "%Y%m%d").date() if trade_date else date.today()
+    trade_days = _resolve_trade_days(cursor, days, pro)
+    fetched = 0
+    skipped = 0
+    _log_start("sector_moneyflow", table="sector_moneyflow", days=days, dates=len(trade_days))
+
+    _CONTENT_TYPES = ("行业", "概念", "地域")
+
+    for idx, d in enumerate(trade_days):
+        iso = d.isoformat()
+        if idx > 0 and iso in wm.ok_keys(wm.DATASET_SECTOR_MONEYFLOW, since=d):
+            skipped += 1
+            _log_progress("sector_moneyflow", "%s 跳过（水位已 ok）", iso)
+            continue
+        day_fetched = 0
+        try:
+            for ct in _CONTENT_TYPES:
+                df = _pro_call(
+                    "moneyflow_ind_dc",
+                    trade_date=d.strftime("%Y%m%d"),
+                    content_type=ct,
+                    fields=(
+                        "trade_date,content_type,ts_code,name,pct_change,"
+                        "net_amount,buy_elg_amount,buy_lg_amount,"
+                        "buy_md_amount,buy_sm_amount,buy_sm_amount_stock"
+                    ),
+                )
+                if df is None or df.empty:
+                    continue
+                df = df.rename(columns={"ts_code": "code", "buy_sm_amount_stock": "buy_sm_stock"})
+                df["trade_date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d").dt.date
+                cols = [
+                    "trade_date", "content_type", "code", "name", "pct_change",
+                    "net_amount", "buy_elg_amount", "buy_lg_amount",
+                    "buy_md_amount", "buy_sm_amount", "buy_sm_stock",
+                ]
+                df_insert = df[[c for c in cols if c in df.columns]]
+                conn.register("_smf_df", df_insert)
+                conn.execute(
+                    """
+                    INSERT INTO sector_moneyflow
+                        (trade_date, content_type, code, name, pct_change,
+                         net_amount, buy_elg_amount, buy_lg_amount,
+                         buy_md_amount, buy_sm_amount, buy_sm_stock)
+                    SELECT trade_date, content_type, code, name, pct_change,
+                           net_amount, buy_elg_amount, buy_lg_amount,
+                           buy_md_amount, buy_sm_amount, buy_sm_stock FROM _smf_df
+                    ON CONFLICT (trade_date, content_type, code) DO UPDATE SET
+                        name=EXCLUDED.name, pct_change=EXCLUDED.pct_change,
+                        net_amount=EXCLUDED.net_amount, buy_elg_amount=EXCLUDED.buy_elg_amount,
+                        buy_lg_amount=EXCLUDED.buy_lg_amount, buy_md_amount=EXCLUDED.buy_md_amount,
+                        buy_sm_amount=EXCLUDED.buy_sm_amount, buy_sm_stock=EXCLUDED.buy_sm_stock
+                    """
+                )
+                conn.unregister("_smf_df")
+                day_fetched += len(df_insert)
+            fetched += day_fetched
+            wm.set_watermark(wm.DATASET_SECTOR_MONEYFLOW, d, wm.STATUS_OK, day_fetched)
+            _log_progress("sector_moneyflow", "%s 入库 %d 条 → sector_moneyflow", iso, day_fetched)
+        except Exception as exc:
+            wm.set_watermark(wm.DATASET_SECTOR_MONEYFLOW, d, wm.STATUS_ERROR, error=str(exc))
+            raise
+    _log_done("sector_moneyflow", "sector_moneyflow", fetched, skipped=skipped, source="tushare.moneyflow_ind_dc")
+    return fetched
+
+
+def sync_market_moneyflow_to_db(trade_date: str | None = None, days: int = 1) -> int:
+    """按交易日同步大盘资金流向到 market_moneyflow。"""
+    from xshare.data.db import get_conn, init_tables
+
+    pro = _get_pro()
+    conn = get_conn()
+    init_tables(conn)
+
+    cursor = datetime.strptime(trade_date, "%Y%m%d").date() if trade_date else date.today()
+    trade_days = _resolve_trade_days(cursor, days, pro)
+    fetched = 0
+    skipped = 0
+    _log_start("market_moneyflow", table="market_moneyflow", days=days, dates=len(trade_days))
+
+    for idx, d in enumerate(trade_days):
+        iso = d.isoformat()
+        if idx > 0 and iso in wm.ok_keys(wm.DATASET_MARKET_MONEYFLOW, since=d):
+            skipped += 1
+            _log_progress("market_moneyflow", "%s 跳过（水位已 ok）", iso)
+            continue
+        try:
+            df = _pro_call(
+                "moneyflow_mkt_dc",
+                trade_date=d.strftime("%Y%m%d"),
+                fields=(
+                    "trade_date,pct_change_sh,pct_change_sz,net_amount,"
+                    "buy_elg_amount,buy_lg_amount,buy_md_amount,buy_sm_amount"
+                ),
+            )
+            if df is None or df.empty:
+                wm.set_watermark(wm.DATASET_MARKET_MONEYFLOW, d, wm.STATUS_ERROR, 0, "empty")
+                _log_progress("market_moneyflow", "%s 无数据", iso)
+                continue
+            df["trade_date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d").dt.date
+            cols = [
+                "trade_date", "pct_change_sh", "pct_change_sz", "net_amount",
+                "buy_elg_amount", "buy_lg_amount", "buy_md_amount", "buy_sm_amount",
+            ]
+            df_insert = df[[c for c in cols if c in df.columns]]
+            conn.register("_mmf_df", df_insert)
+            conn.execute(
+                """
+                INSERT INTO market_moneyflow
+                    (trade_date, pct_change_sh, pct_change_sz, net_amount,
+                     buy_elg_amount, buy_lg_amount, buy_md_amount, buy_sm_amount)
+                SELECT trade_date, pct_change_sh, pct_change_sz, net_amount,
+                       buy_elg_amount, buy_lg_amount, buy_md_amount, buy_sm_amount FROM _mmf_df
+                ON CONFLICT (trade_date) DO UPDATE SET
+                    pct_change_sh=EXCLUDED.pct_change_sh, pct_change_sz=EXCLUDED.pct_change_sz,
+                    net_amount=EXCLUDED.net_amount, buy_elg_amount=EXCLUDED.buy_elg_amount,
+                    buy_lg_amount=EXCLUDED.buy_lg_amount, buy_md_amount=EXCLUDED.buy_md_amount,
+                    buy_sm_amount=EXCLUDED.buy_sm_amount
+                """
+            )
+            conn.unregister("_mmf_df")
+            fetched += len(df_insert)
+            wm.set_watermark(wm.DATASET_MARKET_MONEYFLOW, d, wm.STATUS_OK, len(df_insert))
+            _log_progress("market_moneyflow", "%s 入库 %d 条 → market_moneyflow", iso, len(df_insert))
+        except Exception as exc:
+            wm.set_watermark(wm.DATASET_MARKET_MONEYFLOW, d, wm.STATUS_ERROR, error=str(exc))
+            raise
+    _log_done("market_moneyflow", "market_moneyflow", fetched, skipped=skipped, source="tushare.moneyflow_mkt_dc")
+    return fetched
+
+
+# ─── 情绪面：limit_list / top_list ───────────────────────────────────────────
+
+
+def sync_limit_list_to_db(trade_date: str | None = None, days: int = 1) -> int:
+    """按交易日同步涨跌停列表到 limit_list（U涨停/D跌停/Z炸板三种类型）。"""
+    from xshare.data.db import get_conn, init_tables
+
+    pro = _get_pro()
+    conn = get_conn()
+    init_tables(conn)
+
+    cursor = datetime.strptime(trade_date, "%Y%m%d").date() if trade_date else date.today()
+    trade_days = _resolve_trade_days(cursor, days, pro)
+    fetched = 0
+    skipped = 0
+    _log_start("limit_list", table="limit_list", days=days, dates=len(trade_days))
+
+    _LIMIT_TYPES = ("U", "D", "Z")
+
+    for idx, d in enumerate(trade_days):
+        iso = d.isoformat()
+        if idx > 0 and iso in wm.ok_keys(wm.DATASET_LIMIT_LIST, since=d):
+            skipped += 1
+            _log_progress("limit_list", "%s 跳过（水位已 ok）", iso)
+            continue
+        day_fetched = 0
+        try:
+            for lt in _LIMIT_TYPES:
+                df = _pro_call(
+                    "limit_list_d",
+                    trade_date=d.strftime("%Y%m%d"),
+                    limit_type=lt,
+                    fields=(
+                        "trade_date,ts_code,industry,name,close,pct_chg,amount,"
+                        "limit_amount,float_mv,turnover_ratio,first_time,last_time,"
+                        "open_times,up_stat,limit_times,limit"
+                    ),
+                )
+                if df is None or df.empty:
+                    continue
+                df = df.rename(columns={"ts_code": "code", "limit": "limit_type"})
+                df["trade_date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d").dt.date
+                cols = [
+                    "trade_date", "code", "name", "industry", "close", "pct_chg",
+                    "amount", "limit_amount", "float_mv", "turnover_ratio",
+                    "first_time", "last_time", "open_times", "up_stat",
+                    "limit_times", "limit_type",
+                ]
+                df_insert = df[[c for c in cols if c in df.columns]]
+                conn.register("_ll_df", df_insert)
+                conn.execute(
+                    """
+                    INSERT INTO limit_list
+                        (trade_date, code, name, industry, close, pct_chg,
+                         amount, limit_amount, float_mv, turnover_ratio,
+                         first_time, last_time, open_times, up_stat,
+                         limit_times, limit_type)
+                    SELECT trade_date, code, name, industry, close, pct_chg,
+                           amount, limit_amount, float_mv, turnover_ratio,
+                           first_time, last_time, open_times, up_stat,
+                           limit_times, limit_type FROM _ll_df
+                    ON CONFLICT (trade_date, code, limit_type) DO UPDATE SET
+                        name=EXCLUDED.name, industry=EXCLUDED.industry, close=EXCLUDED.close,
+                        pct_chg=EXCLUDED.pct_chg, amount=EXCLUDED.amount,
+                        limit_amount=EXCLUDED.limit_amount, float_mv=EXCLUDED.float_mv,
+                        turnover_ratio=EXCLUDED.turnover_ratio, first_time=EXCLUDED.first_time,
+                        last_time=EXCLUDED.last_time, open_times=EXCLUDED.open_times,
+                        up_stat=EXCLUDED.up_stat, limit_times=EXCLUDED.limit_times
+                    """
+                )
+                conn.unregister("_ll_df")
+                day_fetched += len(df_insert)
+            fetched += day_fetched
+            wm.set_watermark(wm.DATASET_LIMIT_LIST, d, wm.STATUS_OK, day_fetched)
+            _log_progress("limit_list", "%s 入库 %d 条 → limit_list", iso, day_fetched)
+        except Exception as exc:
+            wm.set_watermark(wm.DATASET_LIMIT_LIST, d, wm.STATUS_ERROR, error=str(exc))
+            raise
+    _log_done("limit_list", "limit_list", fetched, skipped=skipped, source="tushare.limit_list_d")
+    return fetched
+
+
+def sync_top_list_to_db(trade_date: str | None = None, days: int = 1) -> int:
+    """按交易日同步龙虎榜到 top_list。"""
+    from xshare.data.db import get_conn, init_tables
+
+    pro = _get_pro()
+    conn = get_conn()
+    init_tables(conn)
+
+    cursor = datetime.strptime(trade_date, "%Y%m%d").date() if trade_date else date.today()
+    trade_days = _resolve_trade_days(cursor, days, pro)
+    fetched = 0
+    skipped = 0
+    _log_start("top_list", table="top_list", days=days, dates=len(trade_days))
+
+    for idx, d in enumerate(trade_days):
+        iso = d.isoformat()
+        if idx > 0 and iso in wm.ok_keys(wm.DATASET_TOP_LIST, since=d):
+            skipped += 1
+            _log_progress("top_list", "%s 跳过（水位已 ok）", iso)
+            continue
+        try:
+            df = _pro_call(
+                "top_list",
+                trade_date=d.strftime("%Y%m%d"),
+                fields=(
+                    "trade_date,ts_code,name,close,pct_change,turnover_rate,amount,"
+                    "l_sell,l_buy,l_amount,net_amount,net_rate,amount_rate,"
+                    "float_values,reason"
+                ),
+            )
+            if df is None or df.empty:
+                wm.set_watermark(wm.DATASET_TOP_LIST, d, wm.STATUS_ERROR, 0, "empty")
+                _log_progress("top_list", "%s 无数据", iso)
+                continue
+            df = df.rename(columns={"ts_code": "code"})
+            df["trade_date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d").dt.date
+            cols = [
+                "trade_date", "code", "name", "close", "pct_change", "turnover_rate",
+                "amount", "l_buy", "l_sell", "l_amount", "net_amount",
+                "net_rate", "amount_rate", "float_values", "reason",
+            ]
+            df_insert = df[[c for c in cols if c in df.columns]]
+            conn.register("_tl_df", df_insert)
+            conn.execute(
+                """
+                INSERT INTO top_list
+                    (trade_date, code, name, close, pct_change, turnover_rate,
+                     amount, l_buy, l_sell, l_amount, net_amount,
+                     net_rate, amount_rate, float_values, reason)
+                SELECT trade_date, code, name, close, pct_change, turnover_rate,
+                       amount, l_buy, l_sell, l_amount, net_amount,
+                       net_rate, amount_rate, float_values, reason FROM _tl_df
+                ON CONFLICT (trade_date, code) DO UPDATE SET
+                    name=EXCLUDED.name, close=EXCLUDED.close, pct_change=EXCLUDED.pct_change,
+                    turnover_rate=EXCLUDED.turnover_rate, amount=EXCLUDED.amount,
+                    l_buy=EXCLUDED.l_buy, l_sell=EXCLUDED.l_sell, l_amount=EXCLUDED.l_amount,
+                    net_amount=EXCLUDED.net_amount, net_rate=EXCLUDED.net_rate,
+                    amount_rate=EXCLUDED.amount_rate, float_values=EXCLUDED.float_values,
+                    reason=EXCLUDED.reason
+                """
+            )
+            conn.unregister("_tl_df")
+            fetched += len(df_insert)
+            wm.set_watermark(wm.DATASET_TOP_LIST, d, wm.STATUS_OK, len(df_insert))
+            _log_progress("top_list", "%s 入库 %d 条 → top_list", iso, len(df_insert))
+        except Exception as exc:
+            wm.set_watermark(wm.DATASET_TOP_LIST, d, wm.STATUS_ERROR, error=str(exc))
+            raise
+    _log_done("top_list", "top_list", fetched, skipped=skipped, source="tushare.top_list")
+    return fetched
+
+
+# ─── 逻辑面：concept_board / concept_member ─────────────────────────────────
+
+
+def sync_concept_board_to_db(trade_date: str | None = None, days: int = 1) -> int:
+    """按交易日同步概念题材板块到 concept_board（Tushare dc_concept）。
+
+    dc_concept 数据从 2026-02-03 开始；backfill 不会早于此日期。
+    """
+    from xshare.data.db import get_conn, init_tables
+
+    pro = _get_pro()
+    conn = get_conn()
+    init_tables(conn)
+
+    cursor = datetime.strptime(trade_date, "%Y%m%d").date() if trade_date else date.today()
+    trade_days = _resolve_trade_days(cursor, days, pro)
+    # ponytail: dc_concept 数据起始 2026-02-03，过滤掉更早的日期
+    _min_date = date(2026, 2, 3)
+    trade_days = [d for d in trade_days if d >= _min_date]
+
+    fetched = 0
+    skipped = 0
+    _log_start("concept_board", table="concept_board", days=days, dates=len(trade_days))
+
+    for idx, d in enumerate(trade_days):
+        iso = d.isoformat()
+        if idx > 0 and iso in wm.ok_keys(wm.DATASET_CONCEPT_BOARD, since=d):
+            skipped += 1
+            _log_progress("concept_board", "%s 跳过（水位已 ok）", iso)
+            continue
+        try:
+            df = _pro_call(
+                "dc_concept",
+                trade_date=d.strftime("%Y%m%d"),
+                fields=(
+                    "theme_code,trade_date,name,pct_change,hot,sort,strength,"
+                    "z_t_num,main_change,lead_stock,lead_stock_code,lead_stock_pct_change"
+                ),
+            )
+            if df is None or df.empty:
+                wm.set_watermark(wm.DATASET_CONCEPT_BOARD, d, wm.STATUS_ERROR, 0, "empty")
+                _log_progress("concept_board", "%s 无数据", iso)
+                continue
+            df = df.rename(columns={
+                "theme_code": "code",
+                "z_t_num": "zt_num",
+                "lead_stock_pct_change": "lead_stock_pct",
+            })
+            df["trade_date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d").dt.date
+            cols = [
+                "trade_date", "code", "name", "pct_change", "hot", "sort",
+                "strength", "zt_num", "main_change",
+                "lead_stock", "lead_stock_code", "lead_stock_pct",
+            ]
+            df_insert = df[[c for c in cols if c in df.columns]]
+            conn.register("_cb_df", df_insert)
+            conn.execute(
+                """
+                INSERT INTO concept_board
+                    (trade_date, code, name, pct_change, hot, sort,
+                     strength, zt_num, main_change,
+                     lead_stock, lead_stock_code, lead_stock_pct)
+                SELECT trade_date, code, name, pct_change, hot, sort,
+                       strength, zt_num, main_change,
+                       lead_stock, lead_stock_code, lead_stock_pct FROM _cb_df
+                ON CONFLICT (trade_date, code) DO UPDATE SET
+                    name=EXCLUDED.name, pct_change=EXCLUDED.pct_change, hot=EXCLUDED.hot,
+                    sort=EXCLUDED.sort, strength=EXCLUDED.strength, zt_num=EXCLUDED.zt_num,
+                    main_change=EXCLUDED.main_change, lead_stock=EXCLUDED.lead_stock,
+                    lead_stock_code=EXCLUDED.lead_stock_code, lead_stock_pct=EXCLUDED.lead_stock_pct
+                """
+            )
+            conn.unregister("_cb_df")
+            fetched += len(df_insert)
+            wm.set_watermark(wm.DATASET_CONCEPT_BOARD, d, wm.STATUS_OK, len(df_insert))
+            _log_progress("concept_board", "%s 入库 %d 条 → concept_board", iso, len(df_insert))
+        except Exception as exc:
+            wm.set_watermark(wm.DATASET_CONCEPT_BOARD, d, wm.STATUS_ERROR, error=str(exc))
+            raise
+    _log_done("concept_board", "concept_board", fetched, skipped=skipped, source="tushare.dc_concept")
+    return fetched
+
+
+def sync_concept_member_to_db(trade_date: str | None = None, days: int = 1) -> int:
+    """按交易日同步概念题材成分股到 concept_member。
+
+    策略：先从 concept_board 取当日全部 theme_code，逐个调 dc_concept_cons。
+    单次 3000 行上限，按 theme_code 循环天然分页。
+    """
+    from xshare.data.db import get_conn, init_tables
+
+    pro = _get_pro()
+    conn = get_conn()
+    init_tables(conn)
+
+    cursor = datetime.strptime(trade_date, "%Y%m%d").date() if trade_date else date.today()
+    trade_days = _resolve_trade_days(cursor, days, pro)
+    _min_date = date(2026, 2, 3)
+    trade_days = [d for d in trade_days if d >= _min_date]
+
+    fetched = 0
+    skipped = 0
+    _log_start("concept_member", table="concept_member", days=days, dates=len(trade_days))
+
+    for idx, d in enumerate(trade_days):
+        iso = d.isoformat()
+        if idx > 0 and iso in wm.ok_keys(wm.DATASET_CONCEPT_MEMBER, since=d):
+            skipped += 1
+            _log_progress("concept_member", "%s 跳过（水位已 ok）", iso)
+            continue
+        day_fetched = 0
+        try:
+            # 取当日全部概念 code 列表
+            codes = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT code FROM concept_board WHERE trade_date = ?", [d]
+                ).fetchall()
+            ]
+            if not codes:
+                _log_progress("concept_member", "%s concept_board 无数据，跳过", iso)
+                wm.set_watermark(wm.DATASET_CONCEPT_MEMBER, d, wm.STATUS_ERROR, 0, "no concept_board")
+                continue
+
+            frames = []
+            for tc in codes:
+                df = _pro_call(
+                    "dc_concept_cons",
+                    trade_date=d.strftime("%Y%m%d"),
+                    theme_code=tc,
+                    fields="ts_code,trade_date,name,theme_code,industry,reason,hot_num",
+                )
+                if df is None or df.empty:
+                    continue
+                frames.append(df)
+
+            if not frames:
+                wm.set_watermark(wm.DATASET_CONCEPT_MEMBER, d, wm.STATUS_ERROR, 0, "empty")
+                _log_progress("concept_member", "%s 无数据", iso)
+                continue
+
+            df_all = pd.concat(frames, ignore_index=True)
+            df_all = df_all.rename(columns={"ts_code": "code", "theme_code": "concept_code"})
+            df_all["trade_date"] = pd.to_datetime(df_all["trade_date"], format="%Y%m%d").dt.date
+            # hot_num 可能为字符串，转 int
+            df_all["hot_num"] = pd.to_numeric(df_all["hot_num"], errors="coerce").astype("Int64")
+            cols = ["trade_date", "code", "name", "concept_code", "industry", "reason", "hot_num"]
+            df_insert = df_all[[c for c in cols if c in df_all.columns]]
+            conn.register("_cm_df", df_insert)
+            conn.execute(
+                """
+                INSERT INTO concept_member
+                    (trade_date, code, name, concept_code, industry, reason, hot_num)
+                SELECT trade_date, code, name, concept_code, industry, reason, hot_num FROM _cm_df
+                ON CONFLICT (trade_date, code, concept_code) DO UPDATE SET
+                    name=EXCLUDED.name, industry=EXCLUDED.industry,
+                    reason=EXCLUDED.reason, hot_num=EXCLUDED.hot_num
+                """
+            )
+            conn.unregister("_cm_df")
+            day_fetched = len(df_insert)
+            fetched += day_fetched
+            wm.set_watermark(wm.DATASET_CONCEPT_MEMBER, d, wm.STATUS_OK, day_fetched)
+            _log_progress("concept_member", "%s 入库 %d 条 → concept_member", iso, day_fetched)
+        except Exception as exc:
+            wm.set_watermark(wm.DATASET_CONCEPT_MEMBER, d, wm.STATUS_ERROR, error=str(exc))
+            raise
+    _log_done("concept_member", "concept_member", fetched, skipped=skipped, source="tushare.dc_concept_cons")
+    return fetched

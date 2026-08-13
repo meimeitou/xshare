@@ -219,7 +219,9 @@ ALTER TABLE sync_watermark ADD COLUMN IF NOT EXISTS key_type VARCHAR;
 
 -- 回填 key_type：按 dataset 推断
 UPDATE sync_watermark SET key_type = CASE
-    WHEN dataset IN ('daily', 'index_daily', 'fund_daily', 'daily_basic') THEN 'date'
+    WHEN dataset IN ('daily', 'index_daily', 'fund_daily', 'daily_basic',
+                     'moneyflow', 'sector_moneyflow', 'market_moneyflow',
+                     'limit_list', 'top_list', 'concept_board', 'concept_member') THEN 'date'
     WHEN dataset IN ('stock_basic', 'index_basic', 'etf_basic', 'trade_cal', 'news') THEN 'all'
     WHEN dataset IN ('finance', 'fund_nav') THEN 'code'
     ELSE NULL
@@ -286,6 +288,120 @@ CREATE TABLE IF NOT EXISTS sector_snapshot (
     leader_pct DOUBLE,
     ts         TIMESTAMP NOT NULL,
     PRIMARY KEY (name, ts)
+);
+
+-- 个股资金流向（Tushare moneyflow，金额单位：万元）
+CREATE TABLE IF NOT EXISTS stock_moneyflow (
+    code            VARCHAR NOT NULL,
+    trade_date      DATE NOT NULL,
+    buy_sm_amount   DOUBLE,
+    sell_sm_amount  DOUBLE,
+    buy_md_amount   DOUBLE,
+    sell_md_amount  DOUBLE,
+    buy_lg_amount   DOUBLE,
+    sell_lg_amount  DOUBLE,
+    buy_elg_amount  DOUBLE,
+    sell_elg_amount DOUBLE,
+    net_mf_amount   DOUBLE,
+    PRIMARY KEY (code, trade_date)
+);
+
+-- 板块资金流向（Tushare moneyflow_ind_dc，金额单位：元）
+CREATE TABLE IF NOT EXISTS sector_moneyflow (
+    trade_date       DATE NOT NULL,
+    content_type     VARCHAR NOT NULL,
+    code             VARCHAR NOT NULL,
+    name             VARCHAR,
+    pct_change       DOUBLE,
+    net_amount       DOUBLE,
+    buy_elg_amount   DOUBLE,
+    buy_lg_amount    DOUBLE,
+    buy_md_amount    DOUBLE,
+    buy_sm_amount    DOUBLE,
+    buy_sm_stock     VARCHAR,
+    PRIMARY KEY (trade_date, content_type, code)
+);
+
+-- 大盘资金流向（Tushare moneyflow_mkt_dc，金额单位：元）
+CREATE TABLE IF NOT EXISTS market_moneyflow (
+    trade_date         DATE PRIMARY KEY,
+    pct_change_sh      DOUBLE,
+    pct_change_sz      DOUBLE,
+    net_amount         DOUBLE,
+    buy_elg_amount     DOUBLE,
+    buy_lg_amount      DOUBLE,
+    buy_md_amount      DOUBLE,
+    buy_sm_amount      DOUBLE
+);
+
+-- 涨跌停列表（Tushare limit_list_d，含连板数/封单额/炸板次数）
+CREATE TABLE IF NOT EXISTS limit_list (
+    trade_date     DATE NOT NULL,
+    code           VARCHAR NOT NULL,
+    name           VARCHAR,
+    industry       VARCHAR,
+    close          DOUBLE,
+    pct_chg        DOUBLE,
+    amount         DOUBLE,
+    limit_amount   DOUBLE,
+    float_mv       DOUBLE,
+    turnover_ratio DOUBLE,
+    first_time     VARCHAR,
+    last_time      VARCHAR,
+    open_times     INTEGER,
+    up_stat        VARCHAR,
+    limit_times    INTEGER,
+    limit_type     VARCHAR,
+    PRIMARY KEY (trade_date, code, limit_type)
+);
+
+-- 龙虎榜（Tushare top_list）
+CREATE TABLE IF NOT EXISTS top_list (
+    trade_date     DATE NOT NULL,
+    code           VARCHAR NOT NULL,
+    name           VARCHAR,
+    close          DOUBLE,
+    pct_change     DOUBLE,
+    turnover_rate  DOUBLE,
+    amount         DOUBLE,
+    l_buy          DOUBLE,
+    l_sell         DOUBLE,
+    l_amount       DOUBLE,
+    net_amount     DOUBLE,
+    net_rate       DOUBLE,
+    amount_rate    DOUBLE,
+    float_values   DOUBLE,
+    reason         VARCHAR,
+    PRIMARY KEY (trade_date, code)
+);
+
+-- 概念题材板块（Tushare dc_concept）
+CREATE TABLE IF NOT EXISTS concept_board (
+    trade_date         DATE NOT NULL,
+    code               VARCHAR NOT NULL,
+    name               VARCHAR,
+    pct_change         DOUBLE,
+    hot                DOUBLE,
+    sort               INTEGER,
+    strength           DOUBLE,
+    zt_num             INTEGER,
+    main_change        DOUBLE,
+    lead_stock         VARCHAR,
+    lead_stock_code    VARCHAR,
+    lead_stock_pct     DOUBLE,
+    PRIMARY KEY (trade_date, code)
+);
+
+-- 概念题材成分股（Tushare dc_concept_cons）
+CREATE TABLE IF NOT EXISTS concept_member (
+    trade_date    DATE NOT NULL,
+    code          VARCHAR NOT NULL,
+    name          VARCHAR,
+    concept_code  VARCHAR NOT NULL,
+    industry      VARCHAR,
+    reason        VARCHAR,
+    hot_num       INTEGER,
+    PRIMARY KEY (trade_date, code, concept_code)
 );
 """
 

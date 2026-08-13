@@ -1,9 +1,11 @@
 "use client";
 
+import { useState } from "react";
 import useSWR from "swr";
 import { fetcher } from "@/lib/api";
 import { fmtPct } from "@/lib/format";
 import { Skeleton } from "@/components/Skeleton";
+import { Pager } from "@/components/Pager";
 
 interface MainlineStock {
   code: string;
@@ -15,6 +17,10 @@ interface MainlineStock {
   vol_ratio?: number;
   nine_turn_signal?: string;
   price?: number;
+  net_mf_amount?: number;
+  elg_net_amount?: number;
+  concept?: string;
+  limit_times?: number;
 }
 
 interface MainlineSector {
@@ -23,6 +29,9 @@ interface MainlineSector {
   leader?: string;
   leader_pct?: number;
   strength_tag?: string;
+  net_amount?: number;
+  zt_num?: number;
+  resonance_score?: number;
 }
 
 interface MainlineResponse {
@@ -41,38 +50,79 @@ function SectorsList({ sectors }: { sectors: MainlineSector[] }) {
           className="flex items-center justify-between px-3 py-2 text-sm"
           style={{ borderBottom: i < 4 ? "1px solid var(--border)" : "none" }}
         >
-          <span style={{ color: "var(--text)" }}>{s.name}</span>
-          <span className="mono" style={{ color: (s.change_pct ?? 0) >= 0 ? "var(--up)" : "var(--down)" }}>
-            {fmtPct(s.change_pct)}
-          </span>
+          <div className="flex flex-col" style={{ minWidth: 0, flex: 1 }}>
+            <span style={{ color: "var(--text)" }}>{s.name}</span>
+            {s.strength_tag && (
+              <span className="text-xs" style={{ color: "var(--text-dim)" }}>{s.strength_tag}</span>
+            )}
+          </div>
+          <div className="flex items-center gap-3">
+            {s.net_amount != null && (
+              <span className="mono text-xs" style={{ color: s.net_amount >= 0 ? "var(--up)" : "var(--down)" }}>
+                {s.net_amount >= 0 ? "+" : ""}{s.net_amount.toFixed(2)}亿
+              </span>
+            )}
+            <span className="mono" style={{ color: (s.change_pct ?? 0) >= 0 ? "var(--up)" : "var(--down)" }}>
+              {fmtPct(s.change_pct)}
+            </span>
+          </div>
         </div>
       ))}
     </div>
   );
 }
 
+const STOCK_PAGE_SIZE = 6;
+const STOCK_MAX_PAGES = 3;
+
 function StrongStocksList({ stocks }: { stocks: MainlineStock[] }) {
+  const [page, setPage] = useState(0);
+  const pages = Math.min(STOCK_MAX_PAGES, Math.ceil(stocks.length / STOCK_PAGE_SIZE));
+  const curPage = Math.min(page, Math.max(0, pages - 1));
+  const start = curPage * STOCK_PAGE_SIZE;
+  const slice = stocks.slice(start, start + STOCK_PAGE_SIZE);
+
   return (
-    <div className="surface-flat flex flex-col" style={{ borderRadius: "var(--radius)" }}>
-      {stocks.slice(0, 8).map((s, i) => (
-        <a
-          key={i}
-          href={`/stock/${s.code}`}
-          className="flex items-center justify-between px-3 py-2 text-sm no-underline hover:bg-[var(--bg-raised)] transition-colors"
-          style={{ borderBottom: i < 7 ? "1px solid var(--border)" : "none" }}
-        >
-          <span style={{ color: "var(--text)" }}>
-            {s.name}
-            <span className="ml-1.5 mono text-xs" style={{ color: "var(--text-dim)" }}>
-              {s.code}
-            </span>
-          </span>
-          <span className="mono text-xs" style={{ color: (s.change_pct ?? 0) >= 0 ? "var(--up)" : "var(--down)" }}>
-            {fmtPct(s.change_pct)}
-          </span>
-        </a>
-      ))}
-    </div>
+    <>
+      <div className="surface-flat flex flex-col" style={{ borderRadius: "var(--radius)" }}>
+        {slice.map((s, i) => (
+          <a
+            key={`${s.code}-${start + i}`}
+            href={`/stock/${s.code}`}
+            className="flex items-center justify-between px-3 py-2 text-sm no-underline hover:bg-[var(--bg-raised)] transition-colors"
+            style={{ borderBottom: i < slice.length - 1 ? "1px solid var(--border)" : "none" }}
+          >
+            <div className="flex flex-col" style={{ minWidth: 0, flex: 1 }}>
+              <span style={{ color: "var(--text)" }}>
+                {s.name}
+                <span className="ml-1.5 mono text-xs" style={{ color: "var(--text-dim)" }}>
+                  {s.code}
+                </span>
+              </span>
+              {s.concept && (
+                <span className="text-xs" style={{ color: "var(--text-dim)" }}>{s.concept}</span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {s.elg_net_amount != null && (
+                <span className="mono text-xs" style={{ color: s.elg_net_amount >= 0 ? "var(--up)" : "var(--down)" }} title="超大单净额">
+                  超{s.elg_net_amount >= 0 ? "+" : ""}{s.elg_net_amount.toFixed(2)}亿
+                </span>
+              )}
+              {s.net_mf_amount != null && (
+                <span className="mono text-xs" style={{ color: s.net_mf_amount >= 0 ? "var(--up)" : "var(--down)" }} title="主力净额(大单+超大单)">
+                  主{s.net_mf_amount >= 0 ? "+" : ""}{s.net_mf_amount.toFixed(2)}亿
+                </span>
+              )}
+              <span className="mono" style={{ color: (s.change_pct ?? 0) >= 0 ? "var(--up)" : "var(--down)" }}>
+                {fmtPct(s.change_pct)}
+              </span>
+            </div>
+          </a>
+        ))}
+      </div>
+      <Pager page={curPage} total={pages} onPage={setPage} />
+    </>
   );
 }
 
@@ -98,7 +148,7 @@ function PanelSkeleton() {
 export function MainlinePanel() {
   // 强势股（最重，含 N+1 日线 + 指标计算）单独拉取，独立于板块快照。
   const { data, isLoading } = useSWR<MainlineResponse>(
-    "/api/market/mainline-stocks?strong_limit=8&sector_top_n=5",
+    "/api/market/mainline-stocks?strong_limit=18&sector_top_n=5",
     fetcher,
     { refreshInterval: 120_000, revalidateOnFocus: false, keepPreviousData: true },
   );

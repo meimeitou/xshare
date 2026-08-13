@@ -4,6 +4,7 @@ import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
 
+from xshare.data.db import get_conn
 from xshare.data.provider import get_provider
 from xshare.indicators.technical import calculate_indicators
 from xshare.utils import safe_call, to_json_safe
@@ -104,6 +105,312 @@ def _infer_mainline_sectors_from_movers(provider, sector_top_n: int) -> list[dic
     return sectors[:sector_top_n]
 
 
+# ─── 离线三维度共振主线分析 ──────────────────────────────────────────────────
+
+
+def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None:
+    """离线三维度共振主线分析。数据不足时返回 None，调用方降级到实时路径。
+
+    三维度：
+    - 逻辑面：concept_board 热度/涨停数排序
+    - 资金面：sector_moneyflow 主力净流入 + market_moneyflow 大盘资金
+    - 情绪面：limit_list 涨停梯队 + top_list 龙虎榜
+    """
+    conn = get_conn()
+
+    # 降级检测：新表是否有当日数据
+    stock_daily_latest = conn.execute(
+        "SELECT MAX(trade_date) FROM stock_daily"
+    ).fetchone()[0]
+    if stock_daily_latest is None:
+        return None
+
+    concept_latest = conn.execute(
+        "SELECT MAX(trade_date) FROM concept_board"
+    ).fetchone()[0]
+    limit_latest = conn.execute(
+        "SELECT MAX(trade_date) FROM limit_list"
+    ).fetchone()[0]
+
+    # concept_board 或 limit_list 无数据 → 降级
+    if concept_latest is None or limit_latest is None:
+        return None
+
+    # ── 1. 逻辑面：概念题材热度榜 ──
+    concepts = conn.execute(
+        """
+        SELECT code, name, pct_change, hot, zt_num, main_change,
+               lead_stock, lead_stock_code, lead_stock_pct
+        FROM concept_board
+        WHERE trade_date = ?
+        ORDER BY COALESCE(hot, 0) DESC, COALESCE(zt_num, 0) DESC, COALESCE(pct_change, 0) DESC
+        LIMIT ?
+        """,
+        [concept_latest, sector_top_n * 3],
+    ).fetchall()
+
+    if not concepts:
+        return None
+
+    # ── 2. 资金面：板块资金净流入 ──
+    sector_mf = {}
+    for row in conn.execute(
+        """
+        SELECT code, net_amount
+        FROM sector_moneyflow
+        WHERE trade_date = ? AND content_type = '概念'
+        """,
+        [concept_latest],
+    ).fetchall():
+        sector_mf[row[0]] = float(row[1]) if row[1] is not None else 0.0
+
+    # ── 3. 情绪面：涨停梯队 ──
+    limit_ladder = {"total_zt": 0}
+    limit_rows = conn.execute(
+        """
+        SELECT limit_times, COUNT(*) AS cnt
+        FROM limit_list
+        WHERE trade_date = ? AND limit_type = 'U'
+        GROUP BY limit_times
+        ORDER BY COALESCE(limit_times, 0) DESC
+        """,
+        [limit_latest],
+    ).fetchall()
+    for lt, cnt in limit_rows:
+        lt_val = int(lt) if lt is not None else 0
+        if lt_val >= 5:
+            key = "5连+"
+        elif lt_val == 4:
+            key = "4连"
+        elif lt_val == 3:
+            key = "3连"
+        elif lt_val == 2:
+            key = "2连"
+        else:
+            key = "首板"
+        limit_ladder[key] = limit_ladder.get(key, 0) + int(cnt)
+        limit_ladder["total_zt"] += int(cnt)
+
+    # ── 大盘资金流向 ──
+    mkt_mf_row = conn.execute(
+        """
+        SELECT net_amount, buy_elg_amount
+        FROM market_moneyflow
+        WHERE trade_date = ?
+        """,
+        [concept_latest],
+    ).fetchone()
+    market_moneyflow = {}
+    if mkt_mf_row:
+        market_moneyflow = {
+            "net_amount": float(mkt_mf_row[0]) if mkt_mf_row[0] is not None else 0.0,
+            "buy_elg_amount": float(mkt_mf_row[1]) if mkt_mf_row[1] is not None else 0.0,
+        }
+
+    # ── 4. 三维共振主线排序 ──
+    # 共振分 = RANK(net_amount) * 0.4 + RANK(zt_num) * 0.3 + RANK(hot) * 0.3
+    # 用 RANK() 窗口函数一次算完
+    resonance_rows = conn.execute(
+        """
+        WITH base AS (
+            SELECT
+                cb.code,
+                cb.name,
+                COALESCE(cb.pct_change, 0)   AS pct_change,
+                COALESCE(cb.hot, 0)          AS hot,
+                COALESCE(cb.zt_num, 0)       AS zt_num,
+                COALESCE(cb.main_change, 0)  AS main_change,
+                COALESCE(cb.lead_stock, '')  AS lead_stock,
+                COALESCE(cb.lead_stock_code, '') AS lead_stock_code,
+                COALESCE(cb.lead_stock_pct, 0)   AS lead_stock_pct,
+                COALESCE(smf.net_amount, 0)  AS net_amount
+            FROM concept_board cb
+            LEFT JOIN sector_moneyflow smf
+                ON smf.trade_date = cb.trade_date
+               AND smf.content_type = '概念'
+               AND smf.name = cb.name
+            WHERE cb.trade_date = ?
+        ),
+        ranked AS (
+            SELECT
+                base.*,
+                RANK() OVER (ORDER BY net_amount DESC) AS rk_mf,
+                RANK() OVER (ORDER BY zt_num DESC)     AS rk_zt,
+                RANK() OVER (ORDER BY hot DESC)        AS rk_hot
+            FROM base
+        )
+        SELECT
+            code, name, pct_change, hot, zt_num, net_amount,
+            lead_stock, lead_stock_code, lead_stock_pct,
+            ROUND(
+                (SELECT COUNT(*) FROM base) - rk_mf + 1
+            ) * 0.4
+          + ROUND(
+                (SELECT COUNT(*) FROM base) - rk_zt + 1
+            ) * 0.3
+          + ROUND(
+                (SELECT COUNT(*) FROM base) - rk_hot + 1
+            ) * 0.3 AS resonance_score
+        FROM ranked
+        ORDER BY resonance_score DESC
+        LIMIT ?
+        """,
+        [concept_latest, sector_top_n],
+    ).fetchall()
+
+    mainline_sectors = []
+    for row in resonance_rows:
+        code, name, pct_chg, hot, zt_num, net_amt, lead, lead_code, lead_pct, score = row
+        tag = "主线" if (pct_chg or 0) >= 3 else ("强势" if (pct_chg or 0) >= 2 else "观察")
+        mainline_sectors.append({
+            "name": name,
+            "code": code,
+            "change_pct": round(float(pct_chg or 0), 2),
+            "hot": float(hot or 0),
+            "zt_num": int(zt_num or 0),
+            "net_amount": round(float(net_amt or 0) / 1e8, 4),  # 元 → 亿
+            "lead_stock": lead or "",
+            "leader": lead or "",
+            "leader_pct": round(float(lead_pct or 0), 2),
+            "resonance_score": round(float(score or 0), 2),
+            "strength_tag": tag,
+        })
+
+    # ── 5. 龙头股识别 ──
+    # 对每个主线概念，通过 concept_member 找成分股，JOIN limit_list + stock_moneyflow + top_list
+    mainline_codes = [s["code"] for s in mainline_sectors]
+    strong_stocks = []
+
+    if mainline_codes:
+        # 成分股 → 涨停 + 资金 + 龙虎榜综合
+        placeholders = ",".join("?" * len(mainline_codes))
+        leader_rows = conn.execute(
+            f"""
+            WITH members AS (
+                SELECT code, name, concept_code
+                FROM concept_member
+                WHERE trade_date = ?
+                  AND concept_code IN ({placeholders})
+            ),
+            limit_up AS (
+                SELECT code, limit_times, close, pct_chg
+                FROM limit_list
+                WHERE trade_date = ? AND limit_type = 'U' AND COALESCE(limit_times, 0) >= 2
+            ),
+            sd AS (
+                SELECT code, trade_date, close,
+                       LAG(close) OVER (PARTITION BY code ORDER BY trade_date) AS prev_close
+                FROM stock_daily
+                WHERE trade_date <= ? AND trade_date >= (? - INTERVAL '7 days')
+            ),
+            sd_pct AS (
+                SELECT code,
+                       CASE WHEN prev_close IS NOT NULL AND prev_close != 0
+                            THEN ROUND((close - prev_close) / prev_close * 100, 2)
+                            ELSE 0 END AS daily_pct_chg
+                FROM sd
+                QUALIFY ROW_NUMBER() OVER (PARTITION BY code ORDER BY trade_date DESC) = 1
+            ),
+            mf AS (
+                SELECT code, net_mf_amount,
+                       COALESCE(buy_elg_amount, 0) - COALESCE(sell_elg_amount, 0) AS elg_net_amount
+                FROM stock_moneyflow
+                WHERE trade_date = ?
+            ),
+            tl AS (
+                SELECT code, net_amount
+                FROM top_list
+                WHERE trade_date = ?
+            )
+            SELECT
+                m.code,
+                m.name,
+                m.concept_code,
+                COALESCE(lu.limit_times, 0)  AS limit_times,
+                COALESCE(sd_pct.daily_pct_chg, COALESCE(lu.pct_chg, 0)) AS pct_chg,
+                COALESCE(mf.net_mf_amount, 0) AS net_mf_amount,
+                COALESCE(mf.elg_net_amount, 0) AS elg_net_amount,
+                COALESCE(tl.net_amount, 0)    AS top_list_net
+            FROM members m
+            LEFT JOIN limit_up lu ON lu.code = m.code
+            LEFT JOIN sd_pct ON sd_pct.code = m.code
+            LEFT JOIN mf ON mf.code = m.code
+            LEFT JOIN tl ON tl.code = m.code
+            WHERE COALESCE(lu.limit_times, 0) >= 2
+               OR COALESCE(mf.net_mf_amount, 0) > 0
+               OR COALESCE(tl.net_amount, 0) > 0
+            ORDER BY
+                COALESCE(lu.limit_times, 0) DESC,
+                COALESCE(mf.net_mf_amount, 0) DESC
+            LIMIT ?
+            """,
+            [concept_latest, *mainline_codes, limit_latest, concept_latest, concept_latest, concept_latest, limit_latest, strong_limit * 3],
+        ).fetchall()
+
+        # 龙头评分 = 连板数×30% + 主力净流入排名×40% + 龙虎榜净买入排名×30%
+        if leader_rows:
+            # 计算排名（行内已按 limit_times DESC, net_mf DESC 排序）
+            n = len(leader_rows)
+            concept_name_map = {s["code"]: s["name"] for s in mainline_sectors}
+            for i, row in enumerate(leader_rows):
+                code, name, concept_code, limit_times, pct_chg, net_mf, elg_net, top_net = row
+                # 排名分：越靠前分越高
+                rank_mf = n - i  # 简化：用位置作排名代理
+                rank_tl = n - i
+                score = (
+                    int(limit_times or 0) * 30
+                    + rank_mf * 0.4
+                    + rank_tl * 0.3
+                )
+                strong_stocks.append({
+                    "code": code,
+                    "name": name,
+                    "concept": concept_name_map.get(concept_code, ""),
+                    "limit_times": int(limit_times or 0),
+                    "change_pct": round(float(pct_chg or 0), 2),
+                    "net_mf_amount": round(float(net_mf or 0) / 1e4, 2),  # 万元 → 亿元
+                    "elg_net_amount": round(float(elg_net or 0) / 1e4, 2),  # 万元 → 亿元
+                    "top_list_net": round(float(top_net or 0) / 1e8, 4),  # 元 → 亿
+                    "score": round(float(score), 2),
+                })
+
+            strong_stocks.sort(key=lambda x: x["score"], reverse=True)
+            # 同一股票可能隶属多个概念，按 code 去重保留最高分
+            seen = set()
+            strong_stocks = [s for s in strong_stocks if s["code"] not in seen and not seen.add(s["code"])]
+            strong_stocks = strong_stocks[:strong_limit]
+
+    # ── 市场阶段判断 ──
+    total_zt = limit_ladder.get("total_zt", 0)
+    mkt_net = market_moneyflow.get("net_amount", 0)
+    if total_zt > 50 and mkt_net > 0:
+        market_phase = "情绪高潮（涨停潮+资金流入）"
+    elif total_zt > 20 and mkt_net > 0:
+        market_phase = "情绪回暖（涨停活跃+资金流入）"
+    elif total_zt < 10 and mkt_net < 0:
+        market_phase = "情绪退潮（涨停稀少+资金流出）"
+    else:
+        market_phase = "分化震荡（关注主线板块）"
+
+    mainline_direction = (
+        "、".join(s["name"] for s in mainline_sectors[:3])
+        if mainline_sectors else "暂无明显主线"
+    )
+
+    return {
+        "market_phase": market_phase,
+        "mainline_direction": mainline_direction,
+        "mainline_sectors": mainline_sectors,
+        "limit_ladder": limit_ladder,
+        "market_moneyflow": market_moneyflow,
+        "strong_stocks": strong_stocks,
+        "market_snapshot": {
+            "latest_date": str(concept_latest),
+            "limit_latest_date": str(limit_latest),
+        },
+    }
+
+
 async def _run_sync(fn, *args):
     """同步 provider 调用丢线程池并发执行。"""
     fut = _mainline_pool.submit(fn, *args)
@@ -124,6 +431,13 @@ async def market_mainline(args: dict) -> str:
     provider = get_provider()
     sector_top_n = int(args.get("sector_top_n", 8))
     strong_limit = int(args.get("strong_limit", 10))
+
+    # 离线三维度共振路径（优先：概念题材 + 资金 + 涨停梯队）
+    db_result = await asyncio.to_thread(_score_mainline_from_db, sector_top_n, strong_limit)
+    if db_result is not None:
+        db_result["data_source"] = "offline_3d_resonance"
+        db_result["methodology"] = "资金+情绪+逻辑三维共振"
+        return json.dumps(to_json_safe(db_result), ensure_ascii=False, default=str)
 
     result = {
         "market_phase": "",

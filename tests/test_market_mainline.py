@@ -87,6 +87,7 @@ class FallbackSectorProvider(FakeProvider):
 @pytest.mark.asyncio
 async def test_market_mainline_basic(monkeypatch):
     monkeypatch.setattr(mm, "get_provider", lambda: FakeProvider())
+    monkeypatch.setattr(mm, "_score_mainline_from_db", lambda *a, **k: None)
 
     resp = await mm.market_mainline({"sector_top_n": 3, "strong_limit": 2})
     data = json.loads(resp)
@@ -109,6 +110,7 @@ async def test_market_mainline_basic(monkeypatch):
 @pytest.mark.asyncio
 async def test_market_mainline_sector_fallback(monkeypatch):
     monkeypatch.setattr(mm, "get_provider", lambda: FallbackSectorProvider())
+    monkeypatch.setattr(mm, "_score_mainline_from_db", lambda *a, **k: None)
 
     resp = await mm.market_mainline({"sector_top_n": 3, "strong_limit": 2})
     data = json.loads(resp)
@@ -117,3 +119,62 @@ async def test_market_mainline_sector_fallback(monkeypatch):
     assert data["sector_data_source"] == "fallback_top_movers"
     assert "sector_error" in data
     assert len(data["mainline_sectors"]) > 0
+
+
+
+@pytest.mark.asyncio
+async def test_market_mainline_offline_3d_resonance(monkeypatch):
+    """离线三维度共振路径：当 DB 有数据时优先返回 offline_3d_resonance 结果。"""
+    fake_offline = {
+        "market_phase": "情绪高潮（涨停潮+资金流入）",
+        "mainline_direction": "光纤概念、CPO概念",
+        "mainline_sectors": [
+            {"name": "光纤概念", "code": "000123.DC", "pct_change": 3.66,
+             "hot": 914.0, "zt_num": 4, "net_amount": 84.13,
+             "lead_stock": "中际旭创", "resonance_score": 604.9,
+             "strength_tag": "主线"},
+        ],
+        "limit_ladder": {"5连+": 1, "4连": 1, "3连": 7, "2连": 7, "首板": 76, "total_zt": 92},
+        "market_moneyflow": {"net_amount": 2.47e10, "buy_elg_amount": 2.69e10},
+        "strong_stocks": [
+            {"code": "300308.SZ", "name": "中际旭创", "concept": "光纤概念",
+             "limit_times": 0, "net_mf_amount": 33.90, "top_list_net": 0.0,
+             "score": 16.8},
+        ],
+    }
+    monkeypatch.setattr(mm, "_score_mainline_from_db", lambda *a, **k: fake_offline)
+
+    resp = await mm.market_mainline({"sector_top_n": 8, "strong_limit": 10})
+    data = json.loads(resp)
+
+    assert "error" not in data
+    assert data["data_source"] == "offline_3d_resonance"
+    assert data["methodology"] == "资金+情绪+逻辑三维共振"
+    assert data["market_phase"] == "情绪高潮（涨停潮+资金流入）"
+    assert len(data["mainline_sectors"]) == 1
+    assert data["mainline_sectors"][0]["name"] == "光纤概念"
+    assert data["mainline_sectors"][0]["resonance_score"] == 604.9
+    assert data["limit_ladder"]["total_zt"] == 92
+    assert len(data["strong_stocks"]) == 1
+    assert data["strong_stocks"][0]["code"] == "300308.SZ"
+
+
+def test_score_mainline_from_db_degradation(monkeypatch):
+    """新表为空时 _score_mainline_from_db 应返回 None，触发降级。"""
+    from xshare.data.db import get_conn
+
+    # 用临时内存 DB 模拟空表
+    import duckdb
+    mem = duckdb.connect(":memory:")
+    # 复制空表结构
+    schema = get_conn().execute("DESCRIBE concept_board").fetchall()
+    cols = ", ".join(
+        f"{r[0]} {r[1]}" for r in schema
+    )
+    mem.execute(f"CREATE TABLE concept_board({cols})")
+    # stock_daily 也需要空表 → 返回 None
+    mem.execute("CREATE TABLE stock_daily(trade_date DATE)")
+
+    monkeypatch.setattr(mm, "get_conn", lambda: mem)
+    result = mm._score_mainline_from_db(8, 10)
+    assert result is None

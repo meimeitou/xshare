@@ -30,6 +30,13 @@ DAILY_BASIC_JOB = "daily_basic"
 FINANCE_JOB = "finance"
 FUND_NAV_JOB = "fund_nav"
 QUOTE_JOB = "quote"
+MONEYFLOW_JOB = "moneyflow"
+SECTOR_MONEYFLOW_JOB = "sector_moneyflow"
+MARKET_MONEYFLOW_JOB = "market_moneyflow"
+LIMIT_LIST_JOB = "limit_list"
+TOP_LIST_JOB = "top_list"
+CONCEPT_BOARD_JOB = "concept_board"
+CONCEPT_MEMBER_JOB = "concept_member"
 
 ALL_JOBS = (
     NEWS_JOB,
@@ -43,12 +50,21 @@ ALL_JOBS = (
     DAILY_BASIC_JOB,
     FINANCE_JOB,
     FUND_NAV_JOB,
+    MONEYFLOW_JOB,
+    SECTOR_MONEYFLOW_JOB,
+    MARKET_MONEYFLOW_JOB,
+    LIMIT_LIST_JOB,
+    TOP_LIST_JOB,
+    CONCEPT_BOARD_JOB,
+    CONCEPT_MEMBER_JOB,
     QUOTE_JOB,
 )
 
 # 日历触发（非 interval）的任务：交易日 17:00 各入队一次
 CALENDAR_JOBS = frozenset({
     DAILY_JOB, INDEX_DAILY_JOB, FUND_DAILY_JOB, DAILY_BASIC_JOB, FUND_NAV_JOB,
+    MONEYFLOW_JOB, SECTOR_MONEYFLOW_JOB, MARKET_MONEYFLOW_JOB,
+    LIMIT_LIST_JOB, TOP_LIST_JOB, CONCEPT_BOARD_JOB, CONCEPT_MEMBER_JOB,
 })
 
 # 仅交易时段运行的 interval 任务：非交易时段 interval loop 不入队
@@ -148,6 +164,62 @@ JOB_META: dict[str, dict] = {
         "label": "行情快照",
         "description": "交易时段每 5 分钟拉取新浪实时行情写入 quote/index/sector_snapshot（无需 TUSHARE_TOKEN）",
         "params_schema": {},
+    },
+    MONEYFLOW_JOB: {
+        "label": "个股资金流向",
+        "description": "Tushare moneyflow 写入 stock_moneyflow；交易日 17:00 触发",
+        "params_schema": {
+            "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+        },
+    },
+    SECTOR_MONEYFLOW_JOB: {
+        "label": "板块资金流向",
+        "description": "Tushare moneyflow_ind_dc 写入 sector_moneyflow（行业/概念/地域）；交易日 17:00 触发",
+        "params_schema": {
+            "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+        },
+    },
+    MARKET_MONEYFLOW_JOB: {
+        "label": "大盘资金流向",
+        "description": "Tushare moneyflow_mkt_dc 写入 market_moneyflow；交易日 17:00 触发",
+        "params_schema": {
+            "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+        },
+    },
+    LIMIT_LIST_JOB: {
+        "label": "涨跌停列表",
+        "description": "Tushare limit_list_d 写入 limit_list（含连板数/炸板）；交易日 17:00 触发",
+        "params_schema": {
+            "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+        },
+    },
+    TOP_LIST_JOB: {
+        "label": "龙虎榜",
+        "description": "Tushare top_list 写入 top_list；交易日 17:00 触发",
+        "params_schema": {
+            "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+        },
+    },
+    CONCEPT_BOARD_JOB: {
+        "label": "概念题材板块",
+        "description": "Tushare dc_concept 写入 concept_board（东财概念板块，数据从 2026-02-03 起）；交易日 17:00 触发",
+        "params_schema": {
+            "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+        },
+    },
+    CONCEPT_MEMBER_JOB: {
+        "label": "概念题材成分",
+        "description": "Tushare dc_concept_cons 写入 concept_member（概念成分股，数据从 2026-02-03 起）；交易日 17:00 触发",
+        "params_schema": {
+            "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+        },
     },
 }
 
@@ -651,6 +723,90 @@ def _sync_quote_blocking(payload: dict | None = None) -> int:
     return count
 
 
+def _sync_moneyflow_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_moneyflow_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        return 0
+    p = payload or {}
+    days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
+    count = sync_moneyflow_to_db(days=days)
+    logger.info("个股资金流向已同步: %d 条", count)
+    return count
+
+
+def _sync_sector_moneyflow_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_sector_moneyflow_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        return 0
+    p = payload or {}
+    days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
+    count = sync_sector_moneyflow_to_db(days=days)
+    logger.info("板块资金流向已同步: %d 条", count)
+    return count
+
+
+def _sync_market_moneyflow_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_market_moneyflow_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        return 0
+    p = payload or {}
+    days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
+    count = sync_market_moneyflow_to_db(days=days)
+    logger.info("大盘资金流向已同步: %d 条", count)
+    return count
+
+
+def _sync_limit_list_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_limit_list_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        return 0
+    p = payload or {}
+    days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
+    count = sync_limit_list_to_db(days=days)
+    logger.info("涨跌停列表已同步: %d 条", count)
+    return count
+
+
+def _sync_top_list_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_top_list_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        return 0
+    p = payload or {}
+    days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
+    count = sync_top_list_to_db(days=days)
+    logger.info("龙虎榜已同步: %d 条", count)
+    return count
+
+
+def _sync_concept_board_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_concept_board_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        return 0
+    p = payload or {}
+    days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
+    count = sync_concept_board_to_db(days=days)
+    logger.info("概念题材板块已同步: %d 条", count)
+    return count
+
+
+def _sync_concept_member_blocking(payload: dict | None = None) -> int:
+    from xshare.data.sources.tushare_source import sync_concept_member_to_db
+
+    if not os.environ.get("TUSHARE_TOKEN"):
+        return 0
+    p = payload or {}
+    days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
+    count = sync_concept_member_to_db(days=days)
+    logger.info("概念题材成分已同步: %d 条", count)
+    return count
+
+
 _BLOCKING_HANDLERS = {
     NEWS_JOB: _sync_news_blocking,
     STOCK_JOB: _sync_stock_blocking,
@@ -664,6 +820,13 @@ _BLOCKING_HANDLERS = {
     FINANCE_JOB: _sync_finance_blocking,
     FUND_NAV_JOB: _sync_fund_nav_blocking,
     QUOTE_JOB: _sync_quote_blocking,
+    MONEYFLOW_JOB: _sync_moneyflow_blocking,
+    SECTOR_MONEYFLOW_JOB: _sync_sector_moneyflow_blocking,
+    MARKET_MONEYFLOW_JOB: _sync_market_moneyflow_blocking,
+    LIMIT_LIST_JOB: _sync_limit_list_blocking,
+    TOP_LIST_JOB: _sync_top_list_blocking,
+    CONCEPT_BOARD_JOB: _sync_concept_board_blocking,
+    CONCEPT_MEMBER_JOB: _sync_concept_member_blocking,
 }
 
 
