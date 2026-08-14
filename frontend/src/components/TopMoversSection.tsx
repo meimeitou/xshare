@@ -16,7 +16,10 @@ interface MoverStat {
 
 const PAGE_SIZE = 6;
 const MAX_PAGES = 3;
-const FETCH_N = PAGE_SIZE * MAX_PAGES * 2; // 36 — enough to fill both boards × 3 pages
+// 4 board×direction lists each need PAGE_SIZE*MAX_PAGES=18 items.
+// Board distribution is uneven (~35% star / ~65% main), so fetch extra
+// to guarantee every list can fill 3 pages. Backend cap is 200.
+const FETCH_N = 100;
 
 /** 科创/创业板: 688/300/301 prefix */
 function isStarOrGEM(code: string): boolean {

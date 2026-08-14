@@ -346,9 +346,8 @@ class AkShareProvider(DataProvider):
     # ─── 北向资金 ────────────────────────────────────────────
 
     def get_northbound_flow(self) -> dict:
-        # 唯一来源 stock_hsgt_fund_flow_summary_em 为东财接口，已停用。
-        # 抛错由工具层字段级 northbound_error 兜底。
-        raise DataFetchError("北向资金数据源(东财)已停用")
+        # 东财接口已停用；北向资金改由 Tushare moneyflow_hsgt 提供（见 ProviderManager）。
+        raise NotImplementedError
 
     # ─── 涨跌幅 Top N ────────────────────────────────────────
 

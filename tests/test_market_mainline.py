@@ -87,6 +87,7 @@ class FallbackSectorProvider(FakeProvider):
 @pytest.mark.asyncio
 async def test_market_mainline_basic(monkeypatch):
     monkeypatch.setattr(mm, "get_provider", lambda: FakeProvider())
+    monkeypatch.setattr(mm, "_read_mainline_cache", lambda: None)
     monkeypatch.setattr(mm, "_score_mainline_from_db", lambda *a, **k: None)
 
     resp = await mm.market_mainline({"sector_top_n": 3, "strong_limit": 2})
@@ -110,6 +111,7 @@ async def test_market_mainline_basic(monkeypatch):
 @pytest.mark.asyncio
 async def test_market_mainline_sector_fallback(monkeypatch):
     monkeypatch.setattr(mm, "get_provider", lambda: FallbackSectorProvider())
+    monkeypatch.setattr(mm, "_read_mainline_cache", lambda: None)
     monkeypatch.setattr(mm, "_score_mainline_from_db", lambda *a, **k: None)
 
     resp = await mm.market_mainline({"sector_top_n": 3, "strong_limit": 2})
@@ -125,6 +127,7 @@ async def test_market_mainline_sector_fallback(monkeypatch):
 @pytest.mark.asyncio
 async def test_market_mainline_offline_3d_resonance(monkeypatch):
     """离线三维度共振路径：当 DB 有数据时优先返回 offline_3d_resonance 结果。"""
+    monkeypatch.setattr(mm, "_read_mainline_cache", lambda: None)
     fake_offline = {
         "market_phase": "情绪高潮（涨停潮+资金流入）",
         "mainline_direction": "光纤概念、CPO概念",
@@ -178,3 +181,39 @@ def test_score_mainline_from_db_degradation(monkeypatch):
     monkeypatch.setattr(mm, "get_conn", lambda: mem)
     result = mm._score_mainline_from_db(8, 10)
     assert result is None
+
+@pytest.mark.asyncio
+async def test_market_mainline_cache_hit(monkeypatch):
+    """mainline_cache 有缓存时优先返回缓存结果，含 cached_at 和 data_date。"""
+    fake_cached = {
+        "market_phase": "情绪回暖（涨停活跃+资金流入）",
+        "mainline_direction": "AI算力、CPO概念",
+        "mainline_sectors": [
+            {"name": "AI算力", "code": "000001.DC", "change_pct": 4.5,
+             "strength_tag": "主线", "resonance_score": 100.0},
+        ],
+        "strong_stocks": [
+            {"code": "300308.SZ", "name": "中际旭创", "score": 20.0},
+        ],
+    }
+    monkeypatch.setattr(mm, "_read_mainline_cache", lambda: {
+        **fake_cached,
+        "data_source": "offline_3d_resonance",
+        "methodology": "资金+情绪+逻辑三维共振",
+        "cached_at": "2026-08-14 17:30:00",
+        "data_date": "2026-08-14",
+    })
+    # _score_mainline_from_db 不应被调用
+    called = []
+    monkeypatch.setattr(mm, "_score_mainline_from_db", lambda *a, **k: called.append(1) or {"unexpected": True})
+
+    resp = await mm.market_mainline({"sector_top_n": 8, "strong_limit": 10})
+    data = json.loads(resp)
+
+    assert called == [], "缓存命中时不应调用 _score_mainline_from_db"
+    assert data["data_source"] == "offline_3d_resonance"
+    assert data["data_date"] == "2026-08-14"
+    assert data["cached_at"] == "2026-08-14 17:30:00"
+    assert data["market_phase"] == "情绪回暖（涨停活跃+资金流入）"
+    assert len(data["mainline_sectors"]) == 1
+    assert data["mainline_sectors"][0]["name"] == "AI算力"

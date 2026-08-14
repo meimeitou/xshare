@@ -1,11 +1,11 @@
 # XShare — LLM Agent Instructions
 
-XShare 是一个金融分析 MCP Server，为 nanobot AI Agent 提供股票/基金/行情数据分析能力。配套 Next.js 16 Web UI 通过 FastAPI 层调用相同的工具函数。
+XShare 是一个金融分析 MCP Server，为 nanobot AI Agent 提供股票/基金/行情数据分析能力。配套 Next.js 16 Web UI 内置 **AI 问股**（LangGraph ReAct Agent），通过 FastAPI 层调用相同的工具函数。
 
 ## 架构概览
 
 ```
-agent (nanobot) ←→ MCP Server (xshare/mcp_server.py)
+nanobot agent ←→ MCP Server (xshare/mcp_server.py)
                         ↓
                    xshare/tools/      ← 每个文件导出 async def tool(args: dict) -> str
                         ↓
@@ -13,20 +13,22 @@ agent (nanobot) ←→ MCP Server (xshare/mcp_server.py)
                         ↓
                    data/xshare.duckdb  ← 本地数据库
 
-Web UI (frontend/) → FastAPI (xshare/web_server.py) → xshare/tools/
+Web UI /ask → FastAPI /api/ai/* → xshare/ai/agent.py (LangGraph) → xshare/ai/tools.py → xshare/tools/
+Web UI 其他页 → FastAPI (xshare/web_server.py) → xshare/tools/
 ```
 
 ### 目录结构
 
 | 路径 | 用途 |
 |------|------|
-| `xshare/tools/` | MCP 工具实现（13 个工具），每个文件一个 `async def tool_name(args: dict) -> str` |
+| `xshare/tools/` | MCP 工具实现（16 个工具），每个文件一个 `async def tool_name(args: dict) -> str` |
+| `xshare/ai/` | Web AI 问股：`agent.py`（LangGraph ReAct + SSE 流式）、`tools.py`（MCP 工具 → LangChain StructuredTool 适配） |
 | `xshare/data/` | 数据层：`provider.py`（多源 failover + DuckDB 缓存 + TTL）、`db.py`（DuckDB OLAP）、`sqlite_db.py`（SQLite OLTP）、`sync_config.py`（定时同步）、`task_queue.py`（任务队列） |
 | `xshare/data/sources/` | 数据源实现：`akshare_provider.py`、`tushare_provider.py`、`ths_news.py` |
 | `xshare/indicators/` | 技术指标（technical.py）+ 基本面指标（fundamental.py），纯 pandas 实现 |
 | `xshare/cli.py` | CLI：`db init` / `portfolio import` / `serve` / `web`（同步请用 Web `/sync`） |
 | `xshare/mcp_server.py` | MCP Server 主入口。`TOOLS` dict 是唯一工具注册表 |
-| `xshare/web_server.py` | FastAPI REST 包装层，CORS 默认允许 localhost |
+| `xshare/web_server.py` | FastAPI REST 包装层（含 `/api/ai/*` SSE 问股端点），CORS 默认允许 localhost |
 | `server.py` | FastMCP 包装器，仅用于 `mcp dev server.py` 本地调试 |
 | `frontend/` | Next.js 16 App Router，详见 `frontend/AGENTS.md` |
 | `workspace/` | nanobot 运行时上下文（SOUL.md 人设、USER.md 偏好、skills/ 领域技能）。**不是 Python 包** |
@@ -41,11 +43,20 @@ Web UI (frontend/) → FastAPI (xshare/web_server.py) → xshare/tools/
 4. **缓存层** → DuckDB 内联 TTL（股票列表 7 天、日线 1 天、财务数据 1 天）
 5. **返回** → `json.dumps(result, ensure_ascii=False)` → MCP → Agent
 
+### Web AI 问股数据流
+
+1. **前端** `/ask` 页 → `POST /api/ai/chat`（SSE）或 `GET/DELETE /api/ai/sessions/*`
+2. **Agent** `xshare/ai/agent.py` — LangGraph `create_react_agent` + `InMemorySaver` 多轮会话
+3. **工具** `xshare/ai/tools.py` — 白名单 11 个行情工具 + `web_search`（Tavily），复用 `web_server._invoke_tool` 线程池隔离
+4. **LLM** `ChatLiteLLM`（OpenAI-compatible），默认 360 智脑 GLM-5.2
+5. **SSE 事件** `tool_call` / `tool_result` / `token` / `done` / `error`
+
 ### 数据源策略
 
 | 场景 | 数据源 | 说明 |
 |------|--------|------|
-| 当天实时行情 / 大盘快照 | quote_snapshot 缓存（quote 任务，新浪，交易时段 5 分钟） | 缓存优先；miss 回退 AkShare 新浪实时；个股再回退 `stock_daily`；北向资金（东财）已停用 |
+| 当天实时行情 / 大盘快照 | quote_snapshot 缓存（quote 任务，新浪，交易时段 5 分钟） | 缓存优先；miss 回退 AkShare 新浪实时；个股再回退 `stock_daily` |
+| 北向资金 | Tushare `moneyflow_hsgt` | 日终数据（沪股通/深股通净流入），需 `TUSHARE_TOKEN`；东财接口已停用 |
 | 东财接口（`*_em` 等） | 禁用 | 易封禁；akshare 历史/净值走 Tushare failover |
 | 日线同步 | Tushare | 仅交易日 17:00 后执行；水位补洞 |
 | 历史数据读取 | DuckDB | local-first，默认不打外部 API |
@@ -64,7 +75,7 @@ uv run xshare web            # FastAPI REST API (localhost:8080)
 uv run pytest                # 运行测试（需先 uv sync --dev）
 uv run mcp dev server.py     # MCP Inspector 调试模式
 
-cd frontend && npm run dev   # Next.js (localhost:3000)
+cd frontend && npm run dev   # Next.js (localhost:3000)，AI 问股需配置 XSHARE_LLM_API_KEY
 
 make dev                     # 后台启动 API + 前端（日志写入 .logs/）
 make kill                    # 停止所有后台进程
@@ -80,6 +91,15 @@ make logs                    # 查看日志
    - 错误时附 `"retry_same_args": false` 阻止 agent 无限重试
 2. 在 `xshare/mcp_server.py` 顶部 import，在 `TOOLS` dict 中添加 `"tool_name": (handler, json_schema)`
 3. （可选）在 `xshare/web_server.py` 中添加对应 FastAPI 路由
+4. （可选）若需 Web AI 问股可用，在 `xshare/ai/tools.py` 的 `AI_TOOL_NAMES` 白名单中添加工具名
+
+## AI 问股
+
+- **入口**：前端 `/ask`；后端 `xshare/ai/agent.py`
+- **工具白名单**：`AI_TOOL_NAMES`（11 个行情/市场工具，不含 `portfolio_*` / `sync_job` / `backtest_run` / `doc_parse`）+ `web_search`
+- **会话存储**：`InMemorySaver`（进程内，重启丢失）；`session_id` 由前端生成 UUID
+- **配置**：`XSHARE_LLM_API_BASE` / `XSHARE_LLM_API_KEY`（或 `OPENCODE_360ZHINAO_API_KEY`）/ `XSHARE_LLM_MODEL`；搜索需 `WEB_SEARCH_API_KEY`（Tavily）
+- **规则**：金融数值必须来自 MCP 工具；`web_search` 仅作情报补充，不可替代行情工具
 
 ## 关键规则
 
@@ -98,8 +118,11 @@ make logs                    # 查看日志
 | 变量 | 必需 | 说明 |
 |------|------|------|
 | `TUSHARE_TOKEN` | 生产用 | Tushare Pro API token |
+| `XSHARE_LLM_API_BASE` | Web AI | LLM API base URL（默认 `https://api.360.cn/v1`，须含 `/v1`） |
+| `XSHARE_LLM_API_KEY` | Web AI | LLM API key；也可用 `OPENCODE_360ZHINAO_API_KEY` |
+| `XSHARE_LLM_MODEL` | Web AI | 模型名（默认 `z-ai/glm-5.2`） |
 | `WEB_SEARCH_PROVIDER` | 可选 | nanobot 搜索后端 (tavily/brave/等) |
-| `WEB_SEARCH_API_KEY` | 可选 | 对应搜索 API key |
+| `WEB_SEARCH_API_KEY` | 可选 | Tavily API key（Web AI `web_search` 工具 + nanobot 搜索） |
 | `XSHARE_DB_PATH` | 可选 | DuckDB 路径（默认 `data/xshare.duckdb`） |
 | `XSHARE_SQLITE_PATH` | 可选 | SQLite OLTP 路径（默认 `data/xshare.sqlite`） |
 | `XSHARE_PROVIDER_TIMEOUT` | 可选 | Provider 调用超时秒数（默认 30） |
@@ -178,6 +201,8 @@ make logs                    # 查看日志
 - Provider 超时不抛常规异常，而是继续下一个 provider（failover）
 - `get_provider()` 返回的是 `ProviderManager` 实例（门面模式），不是单个 DataProvider
 - `workspace/` 下所有 `skill.md` 文件中引用工具时，必须使用 `mcp__xshare__<tool_name>` 格式（MCP 命名空间前缀）
+- Web AI 问股与 nanobot 共用 `xshare/tools/` 实现，但走 `xshare/ai/tools.py` 适配层，不经过 MCP transport
+- AI 问股会话存在内存中，多 worker / 重启后会话不共享
 - FastAPI `web_server.py` 与 MCP 共用 `sync_runtime.spawn_sync_runtime()`（worker + 定时 loop）
 - 队列任务结果：`ok`→success，`skipped`→skipped（不重试），`error`→指数退避重试；禁止把 error/skipped 记成 success
 - `xshare db init` 会 DROP DuckDB 里旧的 OLTP 表（portfolio/sync_*），数据不会自动迁到 SQLite；持仓需重新导入

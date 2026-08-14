@@ -1,0 +1,29 @@
+    return [r[0] if isinstance(r[0], date) else date.fromisoformat(str(r[0])[:10]) for r in rows]
+
+
+def _latest_trade_date_local() -> date | None:
+    """本地日历中 ≤ today 的最近开市日；无日历返回 None。"""
+    today = date.today()
+    days = list_open_trade_days(today - timedelta(days=15), today)
+    return days[-1] if days else None
+
+
+def _daily_sync_status(dataset: str) -> dict:
+    """判断日线数据集最新交易日的同步状态。
+
+    逻辑：取本地日历最近交易日，查该 dataset 在该日的 watermark。
+    status=ok → 'synced'；有 watermark 但非 ok → 'error'；
+    无日历或无 watermark → 'unsynced'。
+    """
+    ltd = _latest_trade_date_local()
+    if ltd is None:
+        return {"sync_status": "unsynced", "latest_trade_date": None}
+    w = wm.get_watermark(dataset, ltd)
+    if w and w.get("status") == wm.STATUS_OK:
+        return {"sync_status": "synced", "latest_trade_date": str(ltd)}
+    if w:
+        return {"sync_status": "error", "latest_trade_date": str(ltd)}
+    return {"sync_status": "unsynced", "latest_trade_date": str(ltd)}
+
+
+# ─── daily coverage / history fetch ──────────────────────────────────────────

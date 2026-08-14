@@ -46,6 +46,8 @@ export interface DailyCoverage {
   sufficient: boolean;
   per_code?: PerCodeCoverage;
   per_stock?: PerCodeCoverage;
+  sync_status?: "synced" | "unsynced" | "error";
+  latest_trade_date?: string | null;
 }
 
 export interface CoverageBundle {

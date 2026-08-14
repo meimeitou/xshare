@@ -1,0 +1,5 @@
+        "per_stock": per_stock,
+        "watermark_latest_ok": latest_wm,
+        "watermark_ok_count": wm.summarize(wm.DATASET_DAILY).get("ok_count", 0),
+        **_daily_sync_status(wm.DATASET_DAILY),
+    }

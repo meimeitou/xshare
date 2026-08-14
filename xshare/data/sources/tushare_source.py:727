@@ -1,0 +1,5 @@
+        "per_code": per_code,
+        "watermark_latest_ok": wm.latest_ok_key(wm.DATASET_FUND_DAILY),
+        "watermark_ok_count": wm.summarize(wm.DATASET_FUND_DAILY).get("ok_count", 0),
+        **_daily_sync_status(wm.DATASET_FUND_DAILY),
+    }

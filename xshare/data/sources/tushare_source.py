@@ -399,6 +399,7 @@ def get_index_daily_coverage(lookback_trading_days: int | None = None) -> dict:
         "per_code": per_code,
         "watermark_latest_ok": wm.latest_ok_key(wm.DATASET_INDEX_DAILY),
         "watermark_ok_count": wm.summarize(wm.DATASET_INDEX_DAILY).get("ok_count", 0),
+        **_daily_sync_status(wm.DATASET_INDEX_DAILY),
     }
 
 
@@ -727,6 +728,7 @@ def get_fund_daily_coverage(lookback_trading_days: int | None = None) -> dict:
         "per_code": per_code,
         "watermark_latest_ok": wm.latest_ok_key(wm.DATASET_FUND_DAILY),
         "watermark_ok_count": wm.summarize(wm.DATASET_FUND_DAILY).get("ok_count", 0),
+        **_daily_sync_status(wm.DATASET_FUND_DAILY),
     }
 
 
@@ -1041,6 +1043,34 @@ def list_open_trade_days(start: date, end: date) -> list[date]:
     ).fetchall()
     return [r[0] if isinstance(r[0], date) else date.fromisoformat(str(r[0])[:10]) for r in rows]
 
+def _latest_trade_date_local() -> date | None:
+    """本地日历中 ≤ today 的最近开市日；无日历返回 None。"""
+    today = date.today()
+    days = list_open_trade_days(today - timedelta(days=15), today)
+    return days[-1] if days else None
+
+
+def _daily_sync_status(dataset: str) -> dict:
+    """判断日线数据集最新交易日的同步状态。
+
+    逻辑：取本地日历最近交易日，查该 dataset 在该日的 watermark。
+    status=ok → 'synced'；有 watermark 但非 ok → 'error'；
+    无日历或无 watermark → 'unsynced'。
+    """
+    ltd = _latest_trade_date_local()
+    if ltd is None:
+        return {"sync_status": "unsynced", "latest_trade_date": None}
+    w = wm.get_watermark(dataset, ltd)
+    if w and w.get("status") == wm.STATUS_OK:
+        return {"sync_status": "synced", "latest_trade_date": str(ltd)}
+    if w:
+        return {"sync_status": "error", "latest_trade_date": str(ltd)}
+    return {"sync_status": "unsynced", "latest_trade_date": str(ltd)}
+
+
+
+
+
 
 # ─── daily coverage / history fetch ──────────────────────────────────────────
 
@@ -1205,6 +1235,7 @@ def get_daily_coverage(lookback_trading_days: int | None = None) -> dict:
         "per_stock": per_stock,
         "watermark_latest_ok": latest_wm,
         "watermark_ok_count": wm.summarize(wm.DATASET_DAILY).get("ok_count", 0),
+        **_daily_sync_status(wm.DATASET_DAILY),
     }
 
 

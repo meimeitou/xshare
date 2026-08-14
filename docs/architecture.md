@@ -20,13 +20,15 @@
 | 数据类型 | 本阶段数据源策略 | 说明 |
 |------|------|------|
 | 当天实时行情 / 大盘快照 | 仅 AkShare | 个股失败回退本地 `stock_daily`（`is_delayed`）；大盘失败返回字段级 error；**不回退 Tushare** |
+| 北向资金 | Tushare `moneyflow_hsgt` | 日终数据；需 `TUSHARE_TOKEN`；东财接口已停用 |
 | 历史数据读取 | DuckDB（sync 写入） | 日线/财务/列表等读路径默认不打外部 API |
 | 基础/历史同步 | Tushare | sync 任务写库（当前无实时权限） |
 | Tushare 日线可用时间 | 交易日 15:00-16:00 入库 | 运营建议 17:00 后在 `/sync` 触发或依赖日历任务 |
 
 实现约束：
 
-- 实时类接口（行情、指数、涨跌统计、板块、成交额、北向、涨跌幅榜）**仅 AkShare**，不因盘中/盘后切换，也不回退 Tushare。
+- 实时类接口（行情、指数、涨跌统计、板块、成交额、涨跌幅榜）**仅 AkShare**，不因盘中/盘后切换，也不回退 Tushare。
+- 北向资金走 **Tushare** `moneyflow_hsgt`（日终数据，非盘中实时）；东财接口已停用。
 - AkShare 失败时：个股回退本地 `stock_daily`；大盘由工具层返回 `*_error`。
 - `daily` / `daily_basic` / `fund_nav` 定时任务仅在交易日 **17:00** 后执行。
 - 历史类数据（日线/财务/基金/股票列表）默认 **local-first**：读路径不打外部 API。

@@ -726,8 +726,8 @@ class ProviderManager:
         return self._call_realtime_akshare_only("get_total_turnover")
 
     def get_northbound_flow(self) -> dict:
-        """北向资金 — 东财源已停用，无缓存，直接抛错由工具层字段级兜底。"""
-        return self._call_realtime_akshare_only("get_northbound_flow")
+        """北向资金净流入 — Tushare moneyflow_hsgt（日终数据，非盘中实时）。"""
+        return self._call_with_provider_names(["tushare"], "get_northbound_flow")
 
     def get_top_movers(self, top_n: int = 5) -> tuple[list[TopMover], list[TopMover]]:
         """涨跌幅 Top N — quote_snapshot 缓存优先；miss 回退 AkShare。"""

@@ -40,3 +40,33 @@ export function changeColor(n: number | null | undefined): string {
   if (d === "down") return "text-down";
   return "text-[var(--text-muted)]";
 }
+
+/** Format a 'YYYY-MM-DD' date string (or BusinessDay) for axis/tooltip display.
+ *  - axisShort: 'MM-DD'        (used for daily tick labels)
+ *  - axisYear:  'YYYY-MM'      (used at year-boundary ticks)
+ *  - full:      'YYYY-MM-DD'   (used in the tooltip header)
+ *  Pass-through for already-formatted strings or non-ISO inputs: return as-is. */
+export function fmtDate(
+  time: { year: number; month: number; day: number } | string | number,
+  mode: "axisShort" | "axisYear" | "full",
+): string {
+  let y: string, m: string, d: string;
+  if (typeof time === "string") {
+    const s = time.slice(0, 10);              // tolerate trailing time/extra chars
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+      [y, m, d] = [s.slice(0, 4), s.slice(5, 7), s.slice(8, 10)];
+    } else {
+      return s;                                // not ISO - show raw
+    }
+  } else if (typeof time === "number") {
+    // UTCTimestamp (epoch seconds) - not a business day we can parse without a date lib
+    return String(time);
+  } else {
+    y = String(time.year);
+    m = String(time.month).padStart(2, "0");
+    d = String(time.day).padStart(2, "0");
+  }
+  if (mode === "axisShort") return `${m}-${d}`;
+  if (mode === "axisYear")  return `${y}-${m}`;
+  return `${y}-${m}-${d}`;
+}

@@ -1,0 +1,12 @@
+export interface DailyCoverage {
+  trading_days_in_db: number;
+  target_days: number;
+  missing_estimate: number;
+  oldest?: string | null;
+  newest?: string | null;
+  sufficient: boolean;
+  per_code?: PerCodeCoverage;
+  per_stock?: PerCodeCoverage;
+  sync_status?: "synced" | "unsynced" | "error";
+  latest_trade_date?: string | null;
+}

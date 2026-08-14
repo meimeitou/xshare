@@ -3,6 +3,7 @@
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 from xshare.data.db import get_conn
 from xshare.data.provider import get_provider
@@ -283,6 +284,11 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
 
     if mainline_codes:
         # 成分股 → 涨停 + 资金 + 龙虎榜综合
+        # concept_member（概念成分股）数据相对稳定，用其自身最新日期查询，
+        # 不强制与 concept_board 同日——同步时间可能错开。
+        member_latest = conn.execute(
+            "SELECT MAX(trade_date) FROM concept_member"
+        ).fetchone()[0]
         placeholders = ",".join("?" * len(mainline_codes))
         leader_rows = conn.execute(
             f"""
@@ -344,7 +350,7 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
                 COALESCE(mf.net_mf_amount, 0) DESC
             LIMIT ?
             """,
-            [concept_latest, *mainline_codes, limit_latest, concept_latest, concept_latest, concept_latest, limit_latest, strong_limit * 3],
+            [member_latest, *mainline_codes, limit_latest, concept_latest, concept_latest, concept_latest, limit_latest, strong_limit * 3],
         ).fetchall()
 
         # 龙头评分 = 连板数×30% + 主力净流入排名×40% + 龙虎榜净买入排名×30%
@@ -404,6 +410,7 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
         "limit_ladder": limit_ladder,
         "market_moneyflow": market_moneyflow,
         "strong_stocks": strong_stocks,
+        "data_date": str(concept_latest),
         "market_snapshot": {
             "latest_date": str(concept_latest),
             "limit_latest_date": str(limit_latest),
@@ -426,11 +433,37 @@ async def _run_scoring(score_fn, mover):
         return None
 
 
+def _read_mainline_cache() -> dict | None:
+    """读取 mainline_cache 最新一行。无缓存返回 None。"""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT trade_date, result_json, cached_at FROM mainline_cache ORDER BY trade_date DESC LIMIT 1"
+    ).fetchone()
+    if not row:
+        return None
+    trade_date, result_json, cached_at = row
+    try:
+        result = json.loads(result_json)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    result["data_source"] = "offline_3d_resonance"
+    result["methodology"] = "资金+情绪+逻辑三维共振"
+    result["cached_at"] = str(cached_at) if cached_at else None
+    result["data_date"] = str(trade_date)
+    return result
+
+
 async def market_mainline(args: dict) -> str:
     """识别市场主线方向与强势股票"""
-    provider = get_provider()
     sector_top_n = int(args.get("sector_top_n", 8))
     strong_limit = int(args.get("strong_limit", 10))
+
+    # 优先读 mainline_cache（定时任务预算结果），命中则直接返回
+    cached = await asyncio.to_thread(_read_mainline_cache)
+    if cached is not None:
+        return json.dumps(to_json_safe(cached), ensure_ascii=False, default=str)
+
+    provider = get_provider()
 
     # 离线三维度共振路径（优先：概念题材 + 资金 + 涨停梯队）
     db_result = await asyncio.to_thread(_score_mainline_from_db, sector_top_n, strong_limit)
@@ -469,6 +502,7 @@ async def market_mainline(args: dict) -> str:
         }
 
         result["market_phase"] = _calc_market_phase(indices, market_stats, northbound)
+        result["data_date"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         result["market_snapshot"] = {
             "indices": indices,
             "market_stats": market_stats,

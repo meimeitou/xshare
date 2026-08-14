@@ -526,14 +526,25 @@ function SessionSidebar({
                     color: active ? "var(--accent-strong)" : "var(--text-muted)",
                   }}
                 >
-                  <span
-                    className="text-sm truncate"
-                    style={{ fontWeight: active ? 600 : 400 }}
-                  >
-                    {s.title || "(空对话)"}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className="text-sm truncate"
+                      style={{ fontWeight: active ? 600 : 400 }}
+                    >
+                      {s.title || "(空对话)"}
+                    </span>
+                    {active && loading && (
+                      <span
+                        className="inline-block w-3 h-3 rounded-full animate-spin shrink-0"
+                        style={{
+                          border: "1.5px solid var(--border)",
+                          borderTopColor: "var(--accent)",
+                        }}
+                      />
+                    )}
+                  </div>
                   <span className="text-xs" style={{ color: "var(--text-dim)" }}>
-                    {s.message_count} 条消息
+                    {active && loading ? "AI 思考中…" : `${s.message_count} 条消息`}
                   </span>
                 </button>
                 <button

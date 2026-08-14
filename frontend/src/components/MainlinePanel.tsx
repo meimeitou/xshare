@@ -39,6 +39,8 @@ interface MainlineResponse {
   mainline_direction?: string;
   mainline_sectors?: MainlineSector[];
   strong_stocks?: MainlineStock[];
+  data_date?: string;
+  cached_at?: string;
 }
 
 function SectorsList({ sectors }: { sectors: MainlineSector[] }) {
@@ -173,6 +175,12 @@ export function MainlinePanel() {
       {data?.market_phase && (
         <p className="text-xs" style={{ color: "var(--accent)" }}>
           {data.market_phase}
+        </p>
+      )}
+      {data?.data_date && (
+        <p className="text-xs mono" style={{ color: "var(--text-dim)" }}>
+          数据日期 {data.data_date}
+          {data?.cached_at && <span style={{ color: "var(--text-muted)" }}> · 计算于 {data.cached_at}</span>}
         </p>
       )}
       {sectors.length > 0 && (

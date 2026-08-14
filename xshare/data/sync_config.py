@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 import os
 import threading
 from datetime import date, datetime, time, timedelta
@@ -37,6 +38,7 @@ LIMIT_LIST_JOB = "limit_list"
 TOP_LIST_JOB = "top_list"
 CONCEPT_BOARD_JOB = "concept_board"
 CONCEPT_MEMBER_JOB = "concept_member"
+MAINLINE_JOB = "mainline"
 
 ALL_JOBS = (
     NEWS_JOB,
@@ -58,6 +60,7 @@ ALL_JOBS = (
     CONCEPT_BOARD_JOB,
     CONCEPT_MEMBER_JOB,
     QUOTE_JOB,
+    MAINLINE_JOB,
 )
 
 # 日历触发（非 interval）的任务：交易日 17:00 各入队一次
@@ -65,6 +68,7 @@ CALENDAR_JOBS = frozenset({
     DAILY_JOB, INDEX_DAILY_JOB, FUND_DAILY_JOB, DAILY_BASIC_JOB, FUND_NAV_JOB,
     MONEYFLOW_JOB, SECTOR_MONEYFLOW_JOB, MARKET_MONEYFLOW_JOB,
     LIMIT_LIST_JOB, TOP_LIST_JOB, CONCEPT_BOARD_JOB, CONCEPT_MEMBER_JOB,
+    MAINLINE_JOB,
 })
 
 # 仅交易时段运行的 interval 任务：非交易时段 interval loop 不入队
@@ -219,6 +223,14 @@ JOB_META: dict[str, dict] = {
         "params_schema": {
             "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
             "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+        },
+    },
+    MAINLINE_JOB: {
+        "label": "主线方向计算",
+        "description": "三维度共振主线分析结果写入 mainline_cache；交易日 17:00 后触发，缓存落后于 concept_board 时自动重算",
+        "params_schema": {
+            "sector_top_n": {"type": "integer", "default": 8, "description": "主线板块数量"},
+            "strong_limit": {"type": "integer", "default": 10, "description": "强势股数量"},
         },
     },
 }
@@ -403,7 +415,15 @@ def init_sync_config() -> None:
         (DAILY_BASIC_JOB, _env_int("XSHARE_DAILY_BASIC_SYNC_INTERVAL", 1440)),
         (FINANCE_JOB, _env_int("XSHARE_FINANCE_SYNC_INTERVAL", 10080)),
         (FUND_NAV_JOB, _env_int("XSHARE_FUND_NAV_SYNC_INTERVAL", 1440)),
+        (MONEYFLOW_JOB, _env_int("XSHARE_MONEYFLOW_SYNC_INTERVAL", 1440)),
+        (SECTOR_MONEYFLOW_JOB, _env_int("XSHARE_SECTOR_MONEYFLOW_SYNC_INTERVAL", 1440)),
+        (MARKET_MONEYFLOW_JOB, _env_int("XSHARE_MARKET_MONEYFLOW_SYNC_INTERVAL", 1440)),
+        (LIMIT_LIST_JOB, _env_int("XSHARE_LIMIT_LIST_SYNC_INTERVAL", 1440)),
+        (TOP_LIST_JOB, _env_int("XSHARE_TOP_LIST_SYNC_INTERVAL", 1440)),
+        (CONCEPT_BOARD_JOB, _env_int("XSHARE_CONCEPT_BOARD_SYNC_INTERVAL", 1440)),
+        (CONCEPT_MEMBER_JOB, _env_int("XSHARE_CONCEPT_MEMBER_SYNC_INTERVAL", 1440)),
         (QUOTE_JOB, _env_int("XSHARE_QUOTE_SYNC_INTERVAL", 5)),
+        (MAINLINE_JOB, _env_int("XSHARE_MAINLINE_SYNC_INTERVAL", 1440)),
     ]
     for job, interval in seeds:
         conn.execute(
@@ -807,6 +827,44 @@ def _sync_concept_member_blocking(payload: dict | None = None) -> int:
     return count
 
 
+def _sync_mainline_blocking(payload: dict | None = None) -> int:
+    """计算三维度共振主线结果并写入 mainline_cache。
+
+    用 _score_mainline_from_db 的 concept_latest 作为基准日期——该函数内部
+    已做降级检测（concept_board / limit_list 无数据时返回 None），无需额外
+    硬依赖检查。stock_daily 日期更新不影响计算：它只做龙头股 7 日回溯查询。
+    """
+    from xshare.data.db import get_conn
+    from xshare.tools.market_mainline import _score_mainline_from_db
+
+    p = payload or {}
+    sector_top_n = int(p.get("sector_top_n") or 8)
+    strong_limit = int(p.get("strong_limit") or 10)
+
+    result = _score_mainline_from_db(sector_top_n, strong_limit)
+    if result is None:
+        raise RuntimeError("_score_mainline_from_db 返回 None，依赖表数据不足")
+
+    # 基准日期 = concept_board 最新交易日（与 _score_mainline_from_db 内部一致）
+    conn = get_conn()
+    concept_latest = conn.execute(
+        "SELECT MAX(trade_date) FROM concept_board"
+    ).fetchone()[0]
+
+    from datetime import datetime as _dt
+    result_json = json.dumps(result, ensure_ascii=False, default=str)
+    conn.execute(
+        """
+        INSERT INTO mainline_cache (trade_date, result_json, cached_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT (trade_date) DO UPDATE SET result_json = excluded.result_json, cached_at = excluded.cached_at
+        """,
+        [concept_latest, result_json, _dt.now()],
+    )
+    logger.info("主线缓存已更新: trade_date=%s", concept_latest)
+    return 1
+
+
 _BLOCKING_HANDLERS = {
     NEWS_JOB: _sync_news_blocking,
     STOCK_JOB: _sync_stock_blocking,
@@ -827,6 +885,7 @@ _BLOCKING_HANDLERS = {
     TOP_LIST_JOB: _sync_top_list_blocking,
     CONCEPT_BOARD_JOB: _sync_concept_board_blocking,
     CONCEPT_MEMBER_JOB: _sync_concept_member_blocking,
+    MAINLINE_JOB: _sync_mainline_blocking,
 }
 
 
@@ -897,6 +956,27 @@ async def _calendar_loop_iteration(job: str, cfg: dict) -> None:
             logger.info("日历任务 %s 已入队: #%d", job, task_id)
         except Exception as exc:
             logger.warning("日历任务 %s 入队失败: %s", job, exc)
+
+    # mainline：依赖表（concept_board 等）可能在 17:00 窗口内陆续同步，
+    # 缓存日期若落后于 concept_board 最新日期则重算刷新。
+    if job == MAINLINE_JOB and already_ok_today:
+        try:
+            from xshare.data.db import get_conn
+            conn = get_conn()
+            concept_latest = conn.execute(
+                "SELECT MAX(trade_date) FROM concept_board"
+            ).fetchone()[0]
+            cached_date = conn.execute(
+                "SELECT MAX(trade_date) FROM mainline_cache"
+            ).fetchone()[0]
+            if concept_latest and (cached_date is None or cached_date < concept_latest):
+                task_id = enqueue(job, trigger="schedule")
+                logger.info(
+                    "主线缓存落后: cached=%s < concept=%s，重算入队 #%d",
+                    cached_date, concept_latest, task_id,
+                )
+        except Exception as exc:
+            logger.debug("主线缓存新鲜度检查失败: %s", exc)
 
     # daily / index_daily：补洞（watermark 缺口）
     if job == DAILY_JOB:

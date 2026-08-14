@@ -403,6 +403,13 @@ CREATE TABLE IF NOT EXISTS concept_member (
     hot_num       INTEGER,
     PRIMARY KEY (trade_date, code, concept_code)
 );
+
+-- 主线方向缓存（定时任务计算结果，market_mainline 优先读取）
+CREATE TABLE IF NOT EXISTS mainline_cache (
+    trade_date   DATE PRIMARY KEY,
+    result_json  VARCHAR NOT NULL,
+    cached_at    TIMESTAMP NOT NULL
+);
 """
 
 

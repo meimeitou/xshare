@@ -281,9 +281,9 @@ function IndicatorChart({ data, tab }: { data: IndicatorsData; tab: string }) {
       <div className="flex gap-6 text-sm mono">
         <div>
           <span style={{ color: "var(--text-dim)" }}>UP </span>
-          <span style={{ color: "var(--down)" }}>
-            {latest.upper.toFixed(2)}
-          </span>
+          <span style={{ color: "var(--up)" }}>
+                      {latest.upper.toFixed(2)}
+                    </span>
         </div>
         <div>
           <span style={{ color: "var(--text-dim)" }}>MID </span>
@@ -293,7 +293,7 @@ function IndicatorChart({ data, tab }: { data: IndicatorsData; tab: string }) {
         </div>
         <div>
           <span style={{ color: "var(--text-dim)" }}>LO </span>
-          <span style={{ color: "var(--up)" }}>{latest.lower.toFixed(2)}</span>
+          <span style={{ color: "var(--down)" }}>{latest.lower.toFixed(2)}</span>
         </div>
       </div>
     );

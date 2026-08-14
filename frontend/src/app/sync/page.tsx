@@ -138,11 +138,19 @@ function CoverageCard({
   loading: boolean;
 }) {
   if (!coverage) return null;
+  const syncStatus = coverage.sync_status ?? "unsynced";
+  const isSynced = syncStatus === "synced";
   const pct = Math.min(
     100,
     Math.round((coverage.trading_days_in_db / coverage.target_days) * 100),
   );
   const perCode = coverage.per_code ?? coverage.per_stock;
+  const syncLabel =
+    syncStatus === "synced"
+      ? "已完成"
+      : syncStatus === "error"
+        ? "同步失败"
+        : "未同步";
   return (
     <div
       className="surface px-4 py-3 flex flex-col gap-2"
@@ -154,20 +162,15 @@ function CoverageCard({
             {label}
           </p>
           <p className="mono text-sm font-medium" style={{ color: "var(--text)" }}>
-            {coverage.trading_days_in_db} / {coverage.target_days} 交易日
-            {coverage.sufficient ? (
-              <span className="ml-2 text-xs" style={{ color: "var(--success)" }}>
-                已满足
-              </span>
-            ) : perCode && perCode.under > 0 ? (
-              <span className="ml-2 text-xs" style={{ color: "var(--danger)" }}>
-                {perCode.under} 个 {codeLabel}数据不足
-              </span>
-            ) : (
-              <span className="ml-2 text-xs" style={{ color: "var(--danger)" }}>
-                缺约 {coverage.missing_estimate} 日
-              </span>
-            )}
+            {isSynced
+              ? (coverage.latest_trade_date ?? coverage.newest ?? "")
+              : `${coverage.trading_days_in_db} / ${coverage.target_days} 交易日`}
+            <span
+              className="ml-2 text-xs"
+              style={{ color: isSynced ? "var(--success)" : "var(--danger)" }}
+            >
+              {syncLabel}
+            </span>
           </p>
         </div>
         <button
@@ -192,27 +195,17 @@ function CoverageCard({
         <div
           className="h-full transition-all"
           style={{
-            width: `${pct}%`,
-            background: coverage.sufficient ? "var(--success)" : "var(--accent)",
+            width: `${isSynced ? 100 : pct}%`,
+            background: isSynced ? "var(--success)" : "var(--accent)",
           }}
         />
       </div>
-      {coverage.newest && (
-        <p className="text-[11px] mono" style={{ color: "var(--text-dim)" }}>
-          最新交易日: {coverage.newest}
-        </p>
-      )}
       {perCode && perCode.total > 0 && (
         <p className="text-[11px] mono" style={{ color: "var(--text-dim)" }}>
           {codeLabel}覆盖: {perCode.sufficient_count}/{
             perCode.seasoned_total ?? perCode.total
           }{" "}
           达标
-          {perCode.under > 0 && (
-            <span style={{ color: "var(--danger)" }}>
-              {" "}（{perCode.under} 不足）
-            </span>
-          )}
           {perCode.listed_in_window && perCode.listed_in_window > 0 && (
             <span>
               {" "}- 次新 {perCode.listed_in_window} 只

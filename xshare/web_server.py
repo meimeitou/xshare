@@ -208,7 +208,7 @@ async def market_mainline_endpoint():
 
 
 @app.get("/api/market/top-movers", tags=["Market"], summary="涨跌幅榜")
-async def market_top_movers_endpoint(top_n: int = Query(5, ge=1, le=50)):
+async def market_top_movers_endpoint(top_n: int = Query(5, ge=1, le=200)):
     from xshare.tools.market_top_movers import market_top_movers
     return _parse(await _invoke_tool(market_top_movers, {"top_n": top_n}))
 

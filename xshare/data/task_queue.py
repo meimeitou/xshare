@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 from xshare.data.sync_config import (
     ALL_JOBS as VALID_TASK_TYPES,
     CALENDAR_JOBS,
+    CONCEPT_BOARD_JOB,
+    CONCEPT_MEMBER_JOB,
     DAILY_BASIC_JOB,
     DAILY_JOB,
     ETF_BASIC_JOB,
@@ -43,9 +45,15 @@ from xshare.data.sync_config import (
     FUND_NAV_JOB,
     INDEX_BASIC_JOB,
     INDEX_DAILY_JOB,
+    LIMIT_LIST_JOB,
+    MAINLINE_JOB,
+    MARKET_MONEYFLOW_JOB,
+    MONEYFLOW_JOB,
     NEWS_JOB,
     QUOTE_JOB,
+    SECTOR_MONEYFLOW_JOB,
     STOCK_JOB,
+    TOP_LIST_JOB,
     TRADE_CAL_JOB,
     _BLOCKING_HANDLERS,
     _set_state,
@@ -425,7 +433,7 @@ async def run_job(job: str, payload: dict | None = None) -> dict:
             )
             return {"job": job, "status": "skipped", "reason": reason, "started_at": started}
 
-        needs_token = job not in (NEWS_JOB, QUOTE_JOB)
+        needs_token = job not in (NEWS_JOB, QUOTE_JOB, MAINLINE_JOB)
         if needs_token and not os.environ.get("TUSHARE_TOKEN"):
             reason = "TUSHARE_TOKEN 未配置"
             _set_state(job, "skipped", reason)
@@ -544,6 +552,9 @@ def enqueue_initial_jobs() -> list[int]:
             STOCK_JOB, DAILY_JOB, INDEX_BASIC_JOB, INDEX_DAILY_JOB,
             ETF_BASIC_JOB, FUND_DAILY_JOB,
             TRADE_CAL_JOB, DAILY_BASIC_JOB, FINANCE_JOB, FUND_NAV_JOB,
+            MONEYFLOW_JOB, SECTOR_MONEYFLOW_JOB, MARKET_MONEYFLOW_JOB,
+            LIMIT_LIST_JOB, TOP_LIST_JOB, CONCEPT_BOARD_JOB, CONCEPT_MEMBER_JOB,
+            MAINLINE_JOB,
         ):
             continue
         if not cfg["enabled"]:
