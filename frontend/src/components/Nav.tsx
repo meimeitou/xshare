@@ -7,6 +7,7 @@ import {
   ArrowsClockwise,
   Briefcase,
   Globe,
+  ChatCircleDots,
 } from "@phosphor-icons/react";
 import useSWR from "swr";
 import { fetcher } from "@/lib/api";
@@ -14,6 +15,7 @@ import { fetcher } from "@/lib/api";
 const links = [
   { href: "/", label: "市场", Icon: Globe },
   { href: "/stock", label: "股票", Icon: ChartLineUp },
+  { href: "/ask", label: "问股", Icon: ChatCircleDots },
   { href: "/portfolio", label: "持仓", Icon: Briefcase },
   { href: "/sync", label: "同步", Icon: ArrowsClockwise },
 ];

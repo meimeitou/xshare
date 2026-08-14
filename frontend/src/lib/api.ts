@@ -92,3 +92,70 @@ export function cleanupSyncHistory(retainDays: number, retainCount = 500) {
     body: JSON.stringify({ retain_days: retainDays, retain_count: retainCount }),
   });
 }
+
+
+export interface ChatEvent {
+  type: "token" | "tool_call" | "tool_result" | "done" | "error";
+  content?: string;
+  name?: string;
+  args?: string;
+  result?: string;
+  message?: string;
+}
+
+export async function* streamChat(
+  sessionId: string,
+  message: string,
+  signal?: AbortSignal,
+): AsyncGenerator<ChatEvent> {
+  const resp = await fetch(`${BASE}/api/ai/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, message }),
+    signal,
+  });
+  if (!resp.ok) throw new Error(`${resp.status}: ${await resp.text().catch(() => resp.statusText)}`);
+  const reader = resp.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      try { yield JSON.parse(payload) as ChatEvent; } catch { /* skip malformed */ }
+    }
+  }
+}
+
+
+export interface ChatSession {
+  session_id: string;
+  title: string;
+  message_count: number;
+}
+
+export function getSessions() {
+  return apiFetch<ChatSession[]>("/api/ai/sessions");
+}
+
+export interface HistoryMessage {
+  role: "user" | "assistant";
+  content: string;
+  toolCalls?: { name: string; args: string; result: string }[];
+}
+
+export function getHistory(sessionId: string) {
+  return apiFetch<HistoryMessage[]>(`/api/ai/sessions/${sessionId}/history`);
+}
+
+
+export function deleteSession(sessionId: string) {
+  return apiFetch<{ deleted: boolean }>(`/api/ai/sessions/${sessionId}`, { method: "DELETE" });
+}

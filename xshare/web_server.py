@@ -29,6 +29,10 @@ Endpoints 一览:
   GET  /api/sync/tasks/{id}
   POST /api/sync/tasks/{id}/cancel
   PATCH /api/sync/jobs/{job}/config  body: {enabled?, interval_minutes?}
+  POST /api/ai/chat              body: {session_id, message}  (SSE 流式)
+  GET  /api/ai/sessions
+  GET  /api/ai/sessions/{session_id}/history
+  DELETE /api/ai/sessions/{session_id}
   GET  /api/health
 
 API 文档: /docs（本地 Swagger UI，不依赖外网 CDN）
@@ -49,6 +53,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from swagger_ui_bundle import swagger_ui_path
 
+from sse_starlette.sse import EventSourceResponse
+from xshare.ai.agent import LLM_API_KEY, chat_stream
+
 logger = logging.getLogger(__name__)
 _queue_tasks: list[asyncio.Task] = []
 
@@ -57,6 +64,7 @@ _OPENAPI_TAGS = [
     {"name": "Stock", "description": "标的列表、解析、行情、指标、基本面、新闻"},
     {"name": "Portfolio", "description": "持仓汇总与交易记录"},
     {"name": "Sync", "description": "同步任务状态、入队、水位、历史"},
+    {"name": "AI", "description": "AI 问股对话"},
     {"name": "Health", "description": "服务健康检查"},
 ]
 
@@ -516,6 +524,69 @@ async def sync_job_config_endpoint(job: str, body: SyncJobConfig):
     return _parse(await _invoke_tool(sync_job, args))
 
 
+
+# ---------------------------------------------------------------------------
+# AI Chat
+# ---------------------------------------------------------------------------
+
+@app.post("/api/ai/chat", tags=["AI"], summary="AI 问股(SSE 流式)")
+async def ai_chat_endpoint(request: Request):
+    """AI 问股 — 流式返回 tool_call / tool_result / token / done 事件。"""
+    body = await request.json()
+    session_id = body.get("session_id", "default")
+    message = body.get("message", "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message 不能为空")
+    if not LLM_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="LLM API key 未配置(设置 XSHARE_LLM_API_KEY 或 OPENCODE_360ZHINAO_API_KEY)",
+        )
+
+    async def event_generator():
+        try:
+            async for sse_data in chat_stream(session_id, message):
+                if await request.is_disconnected():
+                    break
+                yield sse_data  # {"data": json_str} dict
+        except Exception as e:
+            yield {"data": json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False)}
+
+    return EventSourceResponse(event_generator())
+
+
+
+@app.get("/api/ai/sessions", tags=["AI"], summary="AI 问股会话列表")
+async def ai_sessions_endpoint():
+    """列出所有 AI 问股会话。"""
+    if not LLM_API_KEY:
+        raise HTTPException(status_code=503, detail="LLM API key 未配置")
+    from xshare.ai.agent import get_sessions
+
+    return await get_sessions()
+
+
+@app.get("/api/ai/sessions/{session_id}/history", tags=["AI"], summary="AI 问股会话历史")
+async def ai_history_endpoint(session_id: str):
+    """获取指定会话的完整消息历史。"""
+    if not LLM_API_KEY:
+        raise HTTPException(status_code=503, detail="LLM API key 未配置")
+    from xshare.ai.agent import get_history
+
+    return await get_history(session_id)
+
+
+
+
+@app.delete("/api/ai/sessions/{session_id}", tags=["AI"], summary="删除 AI 问股会话")
+async def ai_delete_endpoint(session_id: str):
+    """删除指定会话的所有状态数据。"""
+    if not LLM_API_KEY:
+        raise HTTPException(status_code=503, detail="LLM API key 未配置")
+    from xshare.ai.agent import delete_session
+
+    ok = await delete_session(session_id)
+    return {"deleted": ok}
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------

@@ -20,6 +20,9 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "pypinyin>=0.52.0",
     "swagger-ui-bundle>=1.1.0",
+    "langgraph>=1.1",
+    "langchain-litellm>=0.2",
+    "sse-starlette>=3.4",
 ]
 
 [project.scripts]
