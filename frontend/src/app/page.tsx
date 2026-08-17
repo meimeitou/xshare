@@ -206,8 +206,8 @@ export default function MarketPage() {
       {/* 涨跌统计/成交额/北向（走 overview，与指数共享请求） */}
       <SentimentSection />
 
-      <section className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2">
+      <section className="flex flex-col gap-6">
+        <div>
           <h2 className="text-sm font-medium mb-3" style={{ color: "var(--text-muted)" }}>
             板块涨跌
           </h2>

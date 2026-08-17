@@ -74,8 +74,14 @@ function SectorsList({ sectors }: { sectors: MainlineSector[] }) {
   );
 }
 
+/** 科创板代码以 688 开头；其余视为主板（含创业板/北交所，用户暂不细分）。 */
+function isStarMarket(code: string): boolean {
+  return code.startsWith("688");
+}
+
 const STOCK_PAGE_SIZE = 6;
 const STOCK_MAX_PAGES = 3;
+
 
 function StrongStocksList({ stocks }: { stocks: MainlineStock[] }) {
   const [page, setPage] = useState(0);
@@ -191,14 +197,30 @@ export function MainlinePanel() {
           <SectorsList sectors={sectors} />
         </div>
       )}
-      {stocks.length > 0 && (
-        <div>
-          <h3 className="text-xs mb-3" style={{ color: "var(--text-dim)" }}>
-            强势股
-          </h3>
-          <StrongStocksList stocks={stocks} />
-        </div>
-      )}
+      {stocks.length > 0 && (() => {
+        const main = stocks.filter((s) => !isStarMarket(s.code));
+        const star = stocks.filter((s) => isStarMarket(s.code));
+        return (
+          <>
+            {main.length > 0 && (
+              <div>
+                <h3 className="text-xs mb-3" style={{ color: "var(--text-dim)" }}>
+                  强势股 · 主板
+                </h3>
+                <StrongStocksList stocks={main} />
+              </div>
+            )}
+            {star.length > 0 && (
+              <div>
+                <h3 className="text-xs mb-3" style={{ color: "var(--text-dim)" }}>
+                  强势股 · 科创板
+                </h3>
+                <StrongStocksList stocks={star} />
+              </div>
+            )}
+          </>
+        );
+      })()}
     </div>
   );
 }
