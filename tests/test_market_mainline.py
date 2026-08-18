@@ -191,10 +191,10 @@ async def test_market_mainline_cache_hit(monkeypatch):
         "mainline_sectors": [
             {"name": "AI算力", "code": "000001.DC", "change_pct": 4.5,
              "strength_tag": "主线", "resonance_score": 100.0},
-        ],
+        ] * 8,
         "strong_stocks": [
             {"code": "300308.SZ", "name": "中际旭创", "score": 20.0},
-        ],
+        ] * 10,
     }
     monkeypatch.setattr(mm, "_read_mainline_cache", lambda: {
         **fake_cached,
@@ -215,5 +215,5 @@ async def test_market_mainline_cache_hit(monkeypatch):
     assert data["data_date"] == "2026-08-14"
     assert data["cached_at"] == "2026-08-14 17:30:00"
     assert data["market_phase"] == "情绪回暖（涨停活跃+资金流入）"
-    assert len(data["mainline_sectors"]) == 1
+    assert len(data["mainline_sectors"]) == 8
     assert data["mainline_sectors"][0]["name"] == "AI算力"

@@ -116,7 +116,7 @@ async def sync_job(args: dict) -> str:
                 return json.dumps({"error": f"任务 {job} 不支持 years", "retry_same_args": False}, ensure_ascii=False)
         # start_date/end_date/overwrite 仅日线类任务支持
         if any(k in args for k in ("start_date", "end_date", "overwrite")):
-            if job not in ("daily", "index_daily", "fund_daily"):
+            if job not in ("daily", "index_daily", "fund_daily", "moneyflow"):
                 return json.dumps(
                     {"error": f"任务 {job} 不支持 start_date/end_date/overwrite", "retry_same_args": False},
                     ensure_ascii=False,

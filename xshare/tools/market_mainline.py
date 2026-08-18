@@ -2,8 +2,9 @@
 
 import asyncio
 import json
+import math
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import date, datetime
 
 from xshare.data.db import get_conn
 from xshare.data.provider import get_provider
@@ -109,6 +110,37 @@ def _infer_mainline_sectors_from_movers(provider, sector_top_n: int) -> list[dic
 # ─── 离线三维度共振主线分析 ──────────────────────────────────────────────────
 
 
+
+def _trading_day_lag(conn, earlier, later) -> int:
+    """earlier 与 later 之间的交易日数（later 更新时 > 0）。"""
+    if earlier is None or later is None or later <= earlier:
+        return 0
+    try:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM trade_cal
+            WHERE cal_date > ? AND cal_date <= ? AND is_open = 1
+            """,
+            [earlier, later],
+        ).fetchone()
+        if row is not None:
+            return int(row[0])
+    except Exception:
+        pass
+    if isinstance(earlier, str):
+        earlier = date.fromisoformat(str(earlier)[:10])
+    if isinstance(later, str):
+        later = date.fromisoformat(str(later)[:10])
+    return max(0, (later - earlier).days)
+
+
+def _rank_desc(values: list[float]) -> list[int]:
+    """降序排名（1=最大）。"""
+    order = sorted(range(len(values)), key=lambda i: values[i], reverse=True)
+    ranks = [0] * len(values)
+    for rank, idx in enumerate(order, start=1):
+        ranks[idx] = rank
+    return ranks
 def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None:
     """离线三维度共振主线分析。数据不足时返回 None，调用方降级到实时路径。
 
@@ -118,8 +150,8 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
     - 情绪面：limit_list 涨停梯队 + top_list 龙虎榜
     """
     conn = get_conn()
+    data_warnings: list[str] = []
 
-    # 降级检测：新表是否有当日数据
     stock_daily_latest = conn.execute(
         "SELECT MAX(trade_date) FROM stock_daily"
     ).fetchone()[0]
@@ -132,12 +164,32 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
     limit_latest = conn.execute(
         "SELECT MAX(trade_date) FROM limit_list"
     ).fetchone()[0]
+    sector_mf_latest = conn.execute(
+        "SELECT MAX(trade_date) FROM sector_moneyflow WHERE content_type = '概念'"
+    ).fetchone()[0]
+    stock_mf_latest = conn.execute(
+        "SELECT MAX(trade_date) FROM stock_moneyflow"
+    ).fetchone()[0]
+    member_latest = conn.execute(
+        "SELECT MAX(trade_date) FROM concept_member"
+    ).fetchone()[0]
 
-    # concept_board 或 limit_list 无数据 → 降级
     if concept_latest is None or limit_latest is None:
         return None
 
-    # ── 1. 逻辑面：概念题材热度榜 ──
+    latest_dates = [
+        d for d in (concept_latest, limit_latest, sector_mf_latest, stock_mf_latest)
+        if d is not None
+    ]
+    analysis_date = min(latest_dates)
+
+    if concept_latest > limit_latest:
+        lag = _trading_day_lag(conn, limit_latest, concept_latest)
+        if lag > 0:
+            data_warnings.append(
+                f"limit_list 滞后 {lag} 日，情绪维度使用 {limit_latest}"
+            )
+
     concepts = conn.execute(
         """
         SELECT code, name, pct_change, hot, zt_num, main_change,
@@ -147,13 +199,11 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
         ORDER BY COALESCE(hot, 0) DESC, COALESCE(zt_num, 0) DESC, COALESCE(pct_change, 0) DESC
         LIMIT ?
         """,
-        [concept_latest, sector_top_n * 3],
+        [analysis_date, sector_top_n * 3],
     ).fetchall()
-
     if not concepts:
         return None
 
-    # ── 2. 资金面：板块资金净流入 ──
     sector_mf = {}
     for row in conn.execute(
         """
@@ -161,11 +211,10 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
         FROM sector_moneyflow
         WHERE trade_date = ? AND content_type = '概念'
         """,
-        [concept_latest],
+        [analysis_date],
     ).fetchall():
         sector_mf[row[0]] = float(row[1]) if row[1] is not None else 0.0
 
-    # ── 3. 情绪面：涨停梯队 ──
     limit_ladder = {"total_zt": 0}
     limit_rows = conn.execute(
         """
@@ -175,7 +224,7 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
         GROUP BY limit_times
         ORDER BY COALESCE(limit_times, 0) DESC
         """,
-        [limit_latest],
+        [analysis_date],
     ).fetchall()
     for lt, cnt in limit_rows:
         lt_val = int(lt) if lt is not None else 0
@@ -192,14 +241,13 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
         limit_ladder[key] = limit_ladder.get(key, 0) + int(cnt)
         limit_ladder["total_zt"] += int(cnt)
 
-    # ── 大盘资金流向 ──
     mkt_mf_row = conn.execute(
         """
         SELECT net_amount, buy_elg_amount
         FROM market_moneyflow
         WHERE trade_date = ?
         """,
-        [concept_latest],
+        [analysis_date],
     ).fetchone()
     market_moneyflow = {}
     if mkt_mf_row:
@@ -208,9 +256,23 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
             "buy_elg_amount": float(mkt_mf_row[1]) if mkt_mf_row[1] is not None else 0.0,
         }
 
-    # ── 4. 三维共振主线排序 ──
-    # 共振分 = RANK(net_amount) * 0.4 + RANK(zt_num) * 0.3 + RANK(hot) * 0.3
-    # 用 RANK() 窗口函数一次算完
+    zero_mf_count = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM concept_board cb
+        LEFT JOIN sector_moneyflow smf
+            ON smf.trade_date = cb.trade_date
+           AND smf.content_type = '概念'
+           AND (smf.code = cb.code OR smf.name = cb.name)
+        WHERE cb.trade_date = ?
+          AND COALESCE(smf.net_amount, 0) = 0
+        """,
+        [analysis_date],
+    ).fetchone()[0]
+    if zero_mf_count:
+        data_warnings.append(f"{int(zero_mf_count)} 个板块无资金数据（net_amount=0）")
+
+    # 共振分 = 资金 35% + 涨停 35% + 热度 20% + 概念涨停情绪 10%
     resonance_rows = conn.execute(
         """
         WITH base AS (
@@ -224,12 +286,23 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
                 COALESCE(cb.lead_stock, '')  AS lead_stock,
                 COALESCE(cb.lead_stock_code, '') AS lead_stock_code,
                 COALESCE(cb.lead_stock_pct, 0)   AS lead_stock_pct,
-                COALESCE(smf.net_amount, 0)  AS net_amount
+                COALESCE(smf.net_amount, 0)  AS net_amount,
+                COALESCE(cl.limit_cnt, 0)    AS concept_limit_score
             FROM concept_board cb
             LEFT JOIN sector_moneyflow smf
                 ON smf.trade_date = cb.trade_date
                AND smf.content_type = '概念'
-               AND smf.name = cb.name
+               AND (smf.code = cb.code OR smf.name = cb.name)
+            LEFT JOIN (
+                SELECT concept_code, COUNT(DISTINCT cm.code) AS limit_cnt
+                FROM concept_member cm
+                JOIN limit_list ll
+                  ON ll.code = cm.code
+                 AND ll.trade_date = cm.trade_date
+                 AND ll.limit_type = 'U'
+                WHERE cm.trade_date = ?
+                GROUP BY concept_code
+            ) cl ON cl.concept_code = cb.code
             WHERE cb.trade_date = ?
         ),
         ranked AS (
@@ -237,7 +310,8 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
                 base.*,
                 RANK() OVER (ORDER BY net_amount DESC) AS rk_mf,
                 RANK() OVER (ORDER BY zt_num DESC)     AS rk_zt,
-                RANK() OVER (ORDER BY hot DESC)        AS rk_hot
+                RANK() OVER (ORDER BY hot DESC)        AS rk_hot,
+                RANK() OVER (ORDER BY concept_limit_score DESC) AS rk_limit
             FROM base
         )
         SELECT
@@ -245,18 +319,21 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
             lead_stock, lead_stock_code, lead_stock_pct,
             ROUND(
                 (SELECT COUNT(*) FROM base) - rk_mf + 1
-            ) * 0.4
+            ) * 0.35
           + ROUND(
                 (SELECT COUNT(*) FROM base) - rk_zt + 1
-            ) * 0.3
+            ) * 0.35
           + ROUND(
                 (SELECT COUNT(*) FROM base) - rk_hot + 1
-            ) * 0.3 AS resonance_score
+            ) * 0.2
+          + ROUND(
+                (SELECT COUNT(*) FROM base) - rk_limit + 1
+            ) * 0.1 AS resonance_score
         FROM ranked
         ORDER BY resonance_score DESC
         LIMIT ?
         """,
-        [concept_latest, sector_top_n],
+        [analysis_date, analysis_date, sector_top_n],
     ).fetchall()
 
     mainline_sectors = []
@@ -269,7 +346,7 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
             "change_pct": round(float(pct_chg or 0), 2),
             "hot": float(hot or 0),
             "zt_num": int(zt_num or 0),
-            "net_amount": round(float(net_amt or 0) / 1e8, 4),  # 元 → 亿
+            "net_amount": round(float(net_amt or 0) / 1e8, 4),
             "lead_stock": lead or "",
             "leader": lead or "",
             "leader_pct": round(float(lead_pct or 0), 2),
@@ -277,26 +354,45 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
             "strength_tag": tag,
         })
 
-    # ── 5. 龙头股识别 ──
-    # 对每个主线概念，通过 concept_member 找成分股，JOIN limit_list + stock_moneyflow + top_list
     mainline_codes = [s["code"] for s in mainline_sectors]
-    strong_stocks = []
+    strong_stocks: list[dict] = []
+    concept_name_map = {s["code"]: s["name"] for s in mainline_sectors}
 
     if mainline_codes:
-        # 成分股 → 涨停 + 资金 + 龙虎榜综合
-        # concept_member（概念成分股）数据相对稳定，用其自身最新日期查询，
-        # 不强制与 concept_board 同日——同步时间可能错开。
-        member_latest = conn.execute(
-            "SELECT MAX(trade_date) FROM concept_member"
-        ).fetchone()[0]
         placeholders = ",".join("?" * len(mainline_codes))
         leader_rows = conn.execute(
             f"""
-            WITH members AS (
-                SELECT code, name, concept_code
-                FROM concept_member
+            WITH candidates AS (
+                SELECT code, name FROM concept_member
                 WHERE trade_date = ?
                   AND concept_code IN ({placeholders})
+                UNION
+                SELECT code, name FROM limit_list
+                WHERE trade_date = ? AND limit_type = 'U' AND COALESCE(limit_times, 0) >= 2
+                UNION
+                SELECT code, name FROM (
+                    SELECT smf.code, sb.name,
+                           ROW_NUMBER() OVER (ORDER BY smf.net_mf_amount DESC) AS rn
+                    FROM stock_moneyflow smf
+                    JOIN stock_basic sb ON sb.code = smf.code
+                    WHERE smf.trade_date = ? AND COALESCE(smf.net_mf_amount, 0) > 0
+                ) WHERE rn <= 200
+            ),
+            mainline_members AS (
+                SELECT code, concept_code
+                FROM (
+                    SELECT cm.code, cm.concept_code,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY cm.code
+                               ORDER BY (cb.zt_num + cb.hot) DESC, cm.concept_code
+                           ) AS rn
+                    FROM concept_member cm
+                    JOIN concept_board cb
+                      ON cb.code = cm.concept_code
+                     AND cb.trade_date = cm.trade_date
+                    WHERE cm.trade_date = ?
+                      AND cm.concept_code IN ({placeholders})
+                ) WHERE rn = 1
             ),
             limit_up AS (
                 SELECT code, limit_times, close, pct_chg
@@ -318,8 +414,12 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
                 QUALIFY ROW_NUMBER() OVER (PARTITION BY code ORDER BY trade_date DESC) = 1
             ),
             mf AS (
-                SELECT code, net_mf_amount,
-                       COALESCE(buy_elg_amount, 0) - COALESCE(sell_elg_amount, 0) AS elg_net_amount
+                SELECT code,
+                       net_mf_amount,
+                       COALESCE(buy_elg_amount, 0) - COALESCE(sell_elg_amount, 0) AS elg_net_amount,
+                       COALESCE(buy_lg_amount, 0)  - COALESCE(sell_lg_amount, 0)  AS lg_net_amount,
+                       COALESCE(buy_md_amount, 0)  - COALESCE(sell_md_amount, 0)  AS md_net_amount,
+                       COALESCE(buy_sm_amount, 0)  - COALESCE(sell_sm_amount, 0)  AS sm_net_amount
                 FROM stock_moneyflow
                 WHERE trade_date = ?
             ),
@@ -329,64 +429,164 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
                 WHERE trade_date = ?
             )
             SELECT
-                m.code,
-                m.name,
-                m.concept_code,
+                c.code,
+                c.name,
+                mm.concept_code,
                 COALESCE(lu.limit_times, 0)  AS limit_times,
                 COALESCE(sd_pct.daily_pct_chg, COALESCE(lu.pct_chg, 0)) AS pct_chg,
                 COALESCE(mf.net_mf_amount, 0) AS net_mf_amount,
                 COALESCE(mf.elg_net_amount, 0) AS elg_net_amount,
+                COALESCE(mf.lg_net_amount, 0)  AS lg_net_amount,
+                COALESCE(mf.md_net_amount, 0)  AS md_net_amount,
+                COALESCE(mf.sm_net_amount, 0)  AS sm_net_amount,
                 COALESCE(tl.net_amount, 0)    AS top_list_net
-            FROM members m
-            LEFT JOIN limit_up lu ON lu.code = m.code
-            LEFT JOIN sd_pct ON sd_pct.code = m.code
-            LEFT JOIN mf ON mf.code = m.code
-            LEFT JOIN tl ON tl.code = m.code
+            FROM candidates c
+            LEFT JOIN mainline_members mm ON mm.code = c.code
+            LEFT JOIN limit_up lu ON lu.code = c.code
+            LEFT JOIN sd_pct ON sd_pct.code = c.code
+            LEFT JOIN mf ON mf.code = c.code
+            LEFT JOIN tl ON tl.code = c.code
             WHERE COALESCE(lu.limit_times, 0) >= 2
                OR COALESCE(mf.net_mf_amount, 0) > 0
                OR COALESCE(tl.net_amount, 0) > 0
-            ORDER BY
-                COALESCE(lu.limit_times, 0) DESC,
-                COALESCE(mf.net_mf_amount, 0) DESC
-            LIMIT ?
             """,
-            [member_latest, *mainline_codes, limit_latest, concept_latest, concept_latest, concept_latest, limit_latest, strong_limit * 3],
+            [
+                member_latest, *mainline_codes,
+                analysis_date,
+                analysis_date,
+                member_latest, *mainline_codes,
+                analysis_date,
+                stock_daily_latest, stock_daily_latest,
+                analysis_date,
+                analysis_date,
+            ],
         ).fetchall()
 
-        # 龙头评分 = 连板数×30% + 主力净流入排名×40% + 龙虎榜净买入排名×30%
         if leader_rows:
-            # 计算排名（行内已按 limit_times DESC, net_mf DESC 排序）
+            net_mf_vals = [float(r[5] or 0) for r in leader_rows]
+            top_net_vals = [float(r[10] or 0) for r in leader_rows]
+            mf_ranks = _rank_desc(net_mf_vals)
+            tl_ranks = _rank_desc(top_net_vals)
             n = len(leader_rows)
-            concept_name_map = {s["code"]: s["name"] for s in mainline_sectors}
+
+            scored: list[dict] = []
             for i, row in enumerate(leader_rows):
-                code, name, concept_code, limit_times, pct_chg, net_mf, elg_net, top_net = row
-                # 排名分：越靠前分越高
-                rank_mf = n - i  # 简化：用位置作排名代理
-                rank_tl = n - i
+                code, name, concept_code, limit_times, pct_chg, net_mf, elg_net, lg_net, md_net, sm_net, top_net = row
+                rank_mf = n - mf_ranks[i] + 1
+                rank_tl = n - tl_ranks[i] + 1
                 score = (
                     int(limit_times or 0) * 30
                     + rank_mf * 0.4
                     + rank_tl * 0.3
                 )
-                strong_stocks.append({
+                # 四档净额（单位万元 → 亿元）
+                elg_v = float(elg_net or 0)
+                lg_v = float(lg_net or 0)
+                md_v = float(md_net or 0)
+                sm_v = float(sm_net or 0)
+                # 主力（特大单+大单） vs 散户（小单+中单）背离标签
+                main_force_net = elg_v + lg_v
+                retail_net = sm_v + md_v
+                if main_force_net > 0 and retail_net < 0:
+                    mf_label = "主力吸筹·散户割肉"
+                elif main_force_net < 0 and retail_net > 0:
+                    mf_label = "主力派发·散户接盘"
+                elif main_force_net > 0 and retail_net > 0:
+                    mf_label = "合力净买入"
+                elif main_force_net < 0 and retail_net < 0:
+                    mf_label = "合力净卖出"
+                else:
+                    mf_label = "资金均衡"
+                scored.append({
                     "code": code,
                     "name": name,
-                    "concept": concept_name_map.get(concept_code, ""),
+                    "concept": concept_name_map.get(concept_code, "") if concept_code else "",
+                    "source": "主线成分" if concept_code else (
+                        "连板涨停" if int(limit_times or 0) >= 2 else "主力净流入"
+                    ),
                     "limit_times": int(limit_times or 0),
                     "change_pct": round(float(pct_chg or 0), 2),
-                    "net_mf_amount": round(float(net_mf or 0) / 1e4, 2),  # 万元 → 亿元
-                    "elg_net_amount": round(float(elg_net or 0) / 1e4, 2),  # 万元 → 亿元
-                    "top_list_net": round(float(top_net or 0) / 1e8, 4),  # 元 → 亿
+                    "net_mf_amount": round(float(net_mf or 0) / 1e4, 2),
+                    "elg_net_amount": round(elg_v / 1e4, 2),
+                    "lg_net_amount": round(lg_v / 1e4, 2),
+                    "md_net_amount": round(md_v / 1e4, 2),
+                    "sm_net_amount": round(sm_v / 1e4, 2),
+                    "mf_divergence": mf_label,
+                    "top_list_net": round(float(top_net or 0) / 1e8, 4),
                     "score": round(float(score), 2),
                 })
 
-            strong_stocks.sort(key=lambda x: x["score"], reverse=True)
-            # 同一股票可能隶属多个概念，按 code 去重保留最高分
-            seen = set()
-            strong_stocks = [s for s in strong_stocks if s["code"] not in seen and not seen.add(s["code"])]
-            strong_stocks = strong_stocks[:strong_limit]
+            per_track = math.ceil(strong_limit / 2)
+            limit_pool = sorted(
+                [s for s in scored if s["limit_times"] >= 2],
+                key=lambda x: x["score"],
+                reverse=True,
+            )
+            mf_pool = sorted(
+                [s for s in scored if s["net_mf_amount"] > 0],
+                key=lambda x: x["score"],
+                reverse=True,
+            )
+            merged: list[dict] = []
+            seen: set[str] = set()
+            for stock in limit_pool[:per_track] + mf_pool[:per_track]:
+                if stock["code"] not in seen:
+                    seen.add(stock["code"])
+                    merged.append(stock)
+            if len(merged) < strong_limit:
+                for stock in sorted(scored, key=lambda x: x["score"], reverse=True):
+                    if stock["code"] not in seen:
+                        seen.add(stock["code"])
+                        merged.append(stock)
+                        if len(merged) >= strong_limit:
+                            break
+            strong_stocks = merged[:strong_limit]
+    # 全市场四档资金流概览（散户/中户/大户/机构净额分布）
+    moneyflow_flow: dict = {}
+    if stock_mf_latest is not None:
+        mf_overview = conn.execute(
+            """
+            SELECT
+                SUM(COALESCE(buy_sm_amount, 0) - COALESCE(sell_sm_amount, 0)) AS sm_net,
+                SUM(COALESCE(buy_md_amount, 0) - COALESCE(sell_md_amount, 0)) AS md_net,
+                SUM(COALESCE(buy_lg_amount, 0)  - COALESCE(sell_lg_amount, 0))  AS lg_net,
+                SUM(COALESCE(buy_elg_amount, 0) - COALESCE(sell_elg_amount, 0)) AS elg_net,
+                SUM(COALESCE(net_mf_amount, 0)) AS total_net
+            FROM stock_moneyflow
+            WHERE trade_date = ?
+            """,
+            [analysis_date],
+        ).fetchone()
+        if mf_overview:
+            sm_n = float(mf_overview[0] or 0)
+            md_n = float(mf_overview[1] or 0)
+            lg_n = float(mf_overview[2] or 0)
+            elg_n = float(mf_overview[3] or 0)
+            total_n = float(mf_overview[4] or 0)
+            main_force = elg_n + lg_n
+            retail = sm_n + md_n
+            if main_force > 0 and retail < 0:
+                market_mf_label = "主力吸筹·散户割肉"
+            elif main_force < 0 and retail > 0:
+                market_mf_label = "主力派发·散户接盘"
+            elif main_force > 0 and retail > 0:
+                market_mf_label = "合力净买入"
+            elif main_force < 0 and retail < 0:
+                market_mf_label = "合力净卖出"
+            else:
+                market_mf_label = "资金均衡"
+            moneyflow_flow = {
+                "sm_net_amount": round(sm_n / 1e4, 2),
+                "md_net_amount": round(md_n / 1e4, 2),
+                "lg_net_amount": round(lg_n / 1e4, 2),
+                "elg_net_amount": round(elg_n / 1e4, 2),
+                "total_net_amount": round(total_n / 1e4, 2),
+                "main_force_net": round(main_force / 1e4, 2),
+                "retail_net": round(retail / 1e4, 2),
+                "divergence": market_mf_label,
+                "trade_date": str(analysis_date),
+            }
 
-    # ── 市场阶段判断 ──
     total_zt = limit_ladder.get("total_zt", 0)
     mkt_net = market_moneyflow.get("net_amount", 0)
     if total_zt > 50 and mkt_net > 0:
@@ -403,19 +603,24 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
         if mainline_sectors else "暂无明显主线"
     )
 
-    return {
+    result = {
         "market_phase": market_phase,
         "mainline_direction": mainline_direction,
         "mainline_sectors": mainline_sectors,
         "limit_ladder": limit_ladder,
         "market_moneyflow": market_moneyflow,
+        "moneyflow_flow": moneyflow_flow,
         "strong_stocks": strong_stocks,
-        "data_date": str(concept_latest),
+        "data_date": str(analysis_date),
         "market_snapshot": {
             "latest_date": str(concept_latest),
             "limit_latest_date": str(limit_latest),
+            "member_latest_date": str(member_latest) if member_latest else None,
         },
     }
+    if data_warnings:
+        result["data_warnings"] = data_warnings
+    return result
 
 
 async def _run_sync(fn, *args):
@@ -458,16 +663,21 @@ async def market_mainline(args: dict) -> str:
     sector_top_n = int(args.get("sector_top_n", 8))
     strong_limit = int(args.get("strong_limit", 10))
 
-    # 优先读 mainline_cache（定时任务预算结果），命中则直接返回
+    # 优先读 mainline_cache（定时任务预算结果）。
+    # 缓存由定时任务以默认参数(sector_top_n=8, strong_limit=10)生成；
+    # 当运行时请求的板块/股票数超出缓存已计算的范围时，直接重算而非返回截断结果。
     cached = await asyncio.to_thread(_read_mainline_cache)
     if cached is not None:
-        return json.dumps(to_json_safe(cached), ensure_ascii=False, default=str)
+        cached_sectors = len(cached.get("mainline_sectors") or [])
+        cached_stocks = len(cached.get("strong_stocks") or [])
+        if sector_top_n <= cached_sectors and strong_limit <= cached_stocks:
+            return json.dumps(to_json_safe(cached), ensure_ascii=False, default=str)
 
-    provider = get_provider()
-
-    # 离线三维度共振路径（优先：概念题材 + 资金 + 涨停梯队）
+    # 缓存未命中或参数超出 → 离线三维度共振路径（仅 DB 查询，延迟可接受）
     db_result = await asyncio.to_thread(_score_mainline_from_db, sector_top_n, strong_limit)
     if db_result is not None:
+        if cached is not None:
+            db_result["cached_at"] = cached.get("cached_at")
         db_result["data_source"] = "offline_3d_resonance"
         db_result["methodology"] = "资金+情绪+逻辑三维共振"
         return json.dumps(to_json_safe(db_result), ensure_ascii=False, default=str)
@@ -481,6 +691,7 @@ async def market_mainline(args: dict) -> str:
         "methodology": "板块接口排行",
         "notes": [],
     }
+    provider = get_provider()
 
     try:
         # 市场总体状态 — 并行拉取 4 路快照（共享 spot 缓存，并行可省串行开销）

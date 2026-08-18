@@ -2102,23 +2102,68 @@ def fetch_daily_basic(code: str, trade_date: str = "") -> pd.DataFrame:
 # ─── 资金面：moneyflow / sector_moneyflow / market_moneyflow ─────────────────
 
 
-def sync_moneyflow_to_db(trade_date: str | None = None, days: int = 1) -> int:
-    """按交易日批量同步个股资金流向到 stock_moneyflow（金额单位：万元）。"""
+def find_missing_moneyflow_dates(days: int = 252) -> list[date]:
+    """期望最近 days 个交易日中，stock_moneyflow watermark 尚未 ok 的日期。"""
+    pro = None
+    try:
+        if os.environ.get("TUSHARE_TOKEN"):
+            pro = _get_pro()
+    except Exception:
+        pro = None
+    expected = _resolve_trade_days(date.today(), days, pro or type("P", (), {})())
+    return wm.find_daily_gaps(expected, dataset=wm.DATASET_MONEYFLOW)
+
+
+def sync_moneyflow_to_db(
+    trade_date: str | None = None,
+    days: int = 1,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    overwrite: bool = False,
+) -> int:
+    """按交易日批量同步个股资金流向到 stock_moneyflow（金额单位：万元）。
+
+    日期范围二选一：``start_date``/``end_date`` 按区间补全，或 ``days``
+    取最近 N 个交易日。``overwrite=True`` 时强制重拉覆盖已有数据。
+    """
     from xshare.data.db import get_conn, init_tables
 
     pro = _get_pro()
     conn = get_conn()
     init_tables(conn)
 
+    range_mode = bool(start_date or end_date)
     cursor = datetime.strptime(trade_date, "%Y%m%d").date() if trade_date else date.today()
-    trade_days = _resolve_trade_days(cursor, days, pro)
+
+    if range_mode:
+        start_d = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else cursor
+        end_d = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else cursor
+        if start_d > end_d:
+            raise ValueError(f"start_date({start_d}) 不能晚于 end_date({end_d})")
+        trade_days = _resolve_trade_days_range(start_d, end_d, pro)
+        days = len(trade_days)
+    else:
+        if days <= 0:
+            return 0
+        trade_days = _resolve_trade_days(cursor, days, pro)
+    if not trade_days:
+        _log_skip("moneyflow", "无交易日")
+        return 0
+
     fetched = 0
     skipped = 0
-    _log_start("moneyflow", table="stock_moneyflow", days=days, dates=len(trade_days))
+    _log_start(
+        "moneyflow",
+        table="stock_moneyflow",
+        days=days,
+        dates=len(trade_days),
+        overwrite=overwrite,
+        range_mode=range_mode,
+    )
 
     for idx, d in enumerate(trade_days):
         iso = d.isoformat()
-        if idx > 0 and iso in wm.ok_keys(wm.DATASET_MONEYFLOW, since=d):
+        if not overwrite and idx > 0 and iso in wm.ok_keys(wm.DATASET_MONEYFLOW, since=d):
             skipped += 1
             _log_progress("moneyflow", "%s 跳过（水位已 ok）", iso)
             continue
@@ -2549,11 +2594,15 @@ def sync_concept_board_to_db(trade_date: str | None = None, days: int = 1) -> in
     return fetched
 
 
-def sync_concept_member_to_db(trade_date: str | None = None, days: int = 1) -> int:
+def sync_concept_member_to_db(
+    trade_date: str | None = None,
+    days: int = 1,
+    top_n: int | None = 24,
+) -> int:
     """按交易日同步概念题材成分股到 concept_member。
 
-    策略：先从 concept_board 取当日全部 theme_code，逐个调 dc_concept_cons。
-    单次 3000 行上限，按 theme_code 循环天然分页。
+    默认仅同步主线相关 TOP 概念（top_n，约 sector_top_n*3），避免全市场数百
+    theme_code 循环导致同步失败。传 top_n=None 可恢复全量同步。
     """
     from xshare.data.db import get_conn, init_tables
 
@@ -2578,13 +2627,26 @@ def sync_concept_member_to_db(trade_date: str | None = None, days: int = 1) -> i
             continue
         day_fetched = 0
         try:
-            # 取当日全部概念 code 列表
-            codes = [
-                r[0]
-                for r in conn.execute(
-                    "SELECT code FROM concept_board WHERE trade_date = ?", [d]
-                ).fetchall()
-            ]
+            if top_n is not None:
+                codes = [
+                    r[0]
+                    for r in conn.execute(
+                        """
+                        SELECT code FROM concept_board
+                        WHERE trade_date = ?
+                        ORDER BY COALESCE(hot, 0) DESC, COALESCE(zt_num, 0) DESC
+                        LIMIT ?
+                        """,
+                        [d, top_n],
+                    ).fetchall()
+                ]
+            else:
+                codes = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT code FROM concept_board WHERE trade_date = ?", [d]
+                    ).fetchall()
+                ]
             if not codes:
                 _log_progress("concept_member", "%s concept_board 无数据，跳过", iso)
                 wm.set_watermark(wm.DATASET_CONCEPT_MEMBER, d, wm.STATUS_ERROR, 0, "no concept_board")

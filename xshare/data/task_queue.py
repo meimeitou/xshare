@@ -483,7 +483,7 @@ def enqueue_initial_jobs() -> list[int]:
     """启动时入队 system 任务。
 
     顺序：trade_cal -> stock/index/etf basic -> daily 类增量（窗口开放且库非空）
-    -> daily_basic -> finance -> fund_nav -> news
+    -> daily_basic -> moneyflow -> finance -> fund_nav -> news
 
     历史数据补全不再由启动自动触发：库空时日线类不入队，应由前端
     一次性补全接口（start_date/end_date + overwrite）显式触发。后续缺口
@@ -518,6 +518,10 @@ def enqueue_initial_jobs() -> list[int]:
                 if configs.get(DAILY_BASIC_JOB, {}).get("enabled"):
                     ids.append(
                         enqueue(DAILY_BASIC_JOB, payload={"days": 1}, trigger="system", priority=6)
+                    )
+                if configs.get(MONEYFLOW_JOB, {}).get("enabled"):
+                    ids.append(
+                        enqueue(MONEYFLOW_JOB, payload={"days": 1}, trigger="system", priority=7)
                     )
         except Exception as exc:
             logger.warning("初次入队 %s 失败: %s", DAILY_JOB, exc)

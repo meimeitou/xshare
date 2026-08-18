@@ -175,6 +175,9 @@ JOB_META: dict[str, dict] = {
         "params_schema": {
             "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
             "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+            "start_date": {"type": "string", "description": "区间补全起始 YYYY-MM-DD"},
+            "end_date": {"type": "string", "description": "区间补全结束 YYYY-MM-DD"},
+            "overwrite": {"type": "boolean", "default": False, "description": "强制重拉覆盖已有数据"},
         },
     },
     SECTOR_MONEYFLOW_JOB: {
@@ -219,10 +222,11 @@ JOB_META: dict[str, dict] = {
     },
     CONCEPT_MEMBER_JOB: {
         "label": "概念题材成分",
-        "description": "Tushare dc_concept_cons 写入 concept_member（概念成分股，数据从 2026-02-03 起）；交易日 17:00 触发",
+        "description": "Tushare dc_concept_cons 写入 concept_member（主线 TOP 概念成分，数据从 2026-02-03 起）；交易日 17:00 触发",
         "params_schema": {
             "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
             "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+            "top_n": {"type": "integer", "default": 24, "description": "同步 TOP 概念数（约 sector_top_n*3）"},
         },
     },
     MAINLINE_JOB: {
@@ -749,9 +753,28 @@ def _sync_moneyflow_blocking(payload: dict | None = None) -> int:
     if not os.environ.get("TUSHARE_TOKEN"):
         return 0
     p = payload or {}
-    days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
-    count = sync_moneyflow_to_db(days=days)
+    start_date = p.get("start_date")
+    end_date = p.get("end_date")
+    overwrite = bool(p.get("overwrite"))
+    if start_date or end_date:
+        count = sync_moneyflow_to_db(
+            start_date=start_date, end_date=end_date, overwrite=overwrite,
+        )
+        if count:
+            logger.info(
+                "个股资金流向已同步: %d 条（区间 %s..%s overwrite=%s）",
+                count, start_date, end_date, overwrite,
+            )
+        else:
+            logger.info("个股资金流向无可同步数据（可能非交易日）")
+        return count
+    if p.get("backfill"):
+        days = int(p.get("days") or _env_int("XSHARE_DAILY_BACKFILL_DAYS", 252))
+    else:
+        days = int(p.get("days") or _env_int("XSHARE_MONEYFLOW_SYNC_DAYS", 1))
+    count = sync_moneyflow_to_db(days=days, overwrite=overwrite)
     logger.info("个股资金流向已同步: %d 条", count)
+    _try_enqueue_mainline_if_ready()
     return count
 
 
@@ -764,6 +787,7 @@ def _sync_sector_moneyflow_blocking(payload: dict | None = None) -> int:
     days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
     count = sync_sector_moneyflow_to_db(days=days)
     logger.info("板块资金流向已同步: %d 条", count)
+    _try_enqueue_mainline_if_ready()
     return count
 
 
@@ -775,6 +799,7 @@ def _sync_market_moneyflow_blocking(payload: dict | None = None) -> int:
     p = payload or {}
     days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
     count = sync_market_moneyflow_to_db(days=days)
+    _try_enqueue_mainline_if_ready()
     logger.info("大盘资金流向已同步: %d 条", count)
     return count
 
@@ -787,6 +812,7 @@ def _sync_limit_list_blocking(payload: dict | None = None) -> int:
     p = payload or {}
     days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
     count = sync_limit_list_to_db(days=days)
+    _try_enqueue_mainline_if_ready()
     logger.info("涨跌停列表已同步: %d 条", count)
     return count
 
@@ -812,6 +838,7 @@ def _sync_concept_board_blocking(payload: dict | None = None) -> int:
     days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
     count = sync_concept_board_to_db(days=days)
     logger.info("概念题材板块已同步: %d 条", count)
+    _try_enqueue_mainline_if_ready()
     return count
 
 
@@ -822,17 +849,74 @@ def _sync_concept_member_blocking(payload: dict | None = None) -> int:
         return 0
     p = payload or {}
     days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
-    count = sync_concept_member_to_db(days=days)
+    top_n = p.get("top_n")
+    top_n = int(top_n) if top_n is not None else 24
+    count = sync_concept_member_to_db(days=days, top_n=top_n)
     logger.info("概念题材成分已同步: %d 条", count)
+    _try_enqueue_mainline_if_ready()
     return count
 
 
+# mainline 依赖表：这些表同步到同一交易日后，mainline 才有意义计算。
+# stock_daily 作为基准日期参照（最先入库）。
+_MAINLINE_DEP_TABLES = (
+    ("concept_board", None),
+    ("limit_list", None),
+    ("sector_moneyflow", "概念"),
+    ("stock_moneyflow", None),
+    ("concept_member", None),
+)
+
+
+def _mainline_deps_ready() -> tuple[bool, str | None]:
+    """检查 mainline 5 张依赖表是否都已同步到 stock_daily 的最新交易日。
+
+    Returns:
+        (ready, target_date) — ready=True 时 target_date 为 YYYY-MM-DD；
+        ready=False 时 target_date 为缺失的表名（调试用）或 None。
+    """
+    from xshare.data.db import get_conn
+    conn = get_conn()
+    row = conn.execute("SELECT MAX(trade_date) FROM stock_daily").fetchone()
+    target = row[0] if row else None
+    if target is None:
+        return False, None
+    for table, where in _MAINLINE_DEP_TABLES:
+        sql = f"SELECT MAX(trade_date) FROM {table}"
+        params = []
+        if where:
+            sql += " WHERE content_type = ?"
+            params.append(where)
+        r = conn.execute(sql, params).fetchone()
+        latest = r[0] if r else None
+        if latest is None or str(latest) < str(target):
+            return False, table
+    return True, str(target)
+
+
+def _try_enqueue_mainline_if_ready() -> None:
+    """依赖任务完成后：检查就绪则入队 mainline（dedup 防重复）。
+
+    供 _sync_limit_list / _sync_moneyflow 等 handler 成功后调用。
+    """
+    cfg = get_one(MAINLINE_JOB)
+    if not cfg or not cfg.get("enabled"):
+        return
+    ready, info = _mainline_deps_ready()
+    if not ready:
+        logger.debug("mainline 依赖未就绪（缺 %s），跳过入队", info)
+        return
+    try:
+        from xshare.data.task_queue import enqueue
+        task_id = enqueue(MAINLINE_JOB, trigger="schedule", priority=3)
+        logger.info("mainline 依赖就绪(target=%s)，重算入队 #%d", info, task_id)
+    except Exception as exc:
+        logger.debug("mainline 入队失败: %s", exc)
+
 def _sync_mainline_blocking(payload: dict | None = None) -> int:
     """计算三维度共振主线结果并写入 mainline_cache。
-
-    用 _score_mainline_from_db 的 concept_latest 作为基准日期——该函数内部
-    已做降级检测（concept_board / limit_list 无数据时返回 None），无需额外
-    硬依赖检查。stock_daily 日期更新不影响计算：它只做龙头股 7 日回溯查询。
+    基准日期取自 _score_mainline_from_db 返回的 data_date（analysis_date），
+    确保跨表日期对齐后的缓存键一致。
     """
     from xshare.data.db import get_conn
     from xshare.tools.market_mainline import _score_mainline_from_db
@@ -845,23 +929,22 @@ def _sync_mainline_blocking(payload: dict | None = None) -> int:
     if result is None:
         raise RuntimeError("_score_mainline_from_db 返回 None，依赖表数据不足")
 
-    # 基准日期 = concept_board 最新交易日（与 _score_mainline_from_db 内部一致）
-    conn = get_conn()
-    concept_latest = conn.execute(
-        "SELECT MAX(trade_date) FROM concept_board"
-    ).fetchone()[0]
+    analysis_date = result.get("data_date")
+    if not analysis_date:
+        raise RuntimeError("_score_mainline_from_db 未返回 data_date")
 
     from datetime import datetime as _dt
     result_json = json.dumps(result, ensure_ascii=False, default=str)
+    conn = get_conn()
     conn.execute(
         """
         INSERT INTO mainline_cache (trade_date, result_json, cached_at)
         VALUES (?, ?, ?)
         ON CONFLICT (trade_date) DO UPDATE SET result_json = excluded.result_json, cached_at = excluded.cached_at
         """,
-        [concept_latest, result_json, _dt.now()],
+        [analysis_date, result_json, _dt.now()],
     )
-    logger.info("主线缓存已更新: trade_date=%s", concept_latest)
+    logger.info("主线缓存已更新: trade_date=%s", analysis_date)
     return 1
 
 
@@ -950,33 +1033,40 @@ async def _calendar_loop_iteration(job: str, cfg: dict) -> None:
 
     from xshare.data.task_queue import enqueue
 
-    if not already_ok_today:
+    # mainline 不走 17:00 盲目入队，由依赖就绪检查单独处理（见下方）
+    if not already_ok_today and job != MAINLINE_JOB:
         try:
             task_id = enqueue(job, trigger="schedule")
             logger.info("日历任务 %s 已入队: #%d", job, task_id)
         except Exception as exc:
             logger.warning("日历任务 %s 入队失败: %s", job, exc)
 
-    # mainline：依赖表（concept_board 等）可能在 17:00 窗口内陆续同步，
-    # 缓存日期若落后于 concept_board 最新日期则重算刷新。
-    if job == MAINLINE_JOB and already_ok_today:
-        try:
-            from xshare.data.db import get_conn
-            conn = get_conn()
-            concept_latest = conn.execute(
-                "SELECT MAX(trade_date) FROM concept_board"
-            ).fetchone()[0]
-            cached_date = conn.execute(
-                "SELECT MAX(trade_date) FROM mainline_cache"
-            ).fetchone()[0]
-            if concept_latest and (cached_date is None or cached_date < concept_latest):
-                task_id = enqueue(job, trigger="schedule")
-                logger.info(
-                    "主线缓存落后: cached=%s < concept=%s，重算入队 #%d",
-                    cached_date, concept_latest, task_id,
-                )
-        except Exception as exc:
-            logger.debug("主线缓存新鲜度检查失败: %s", exc)
+    # mainline：仅在依赖表全部就绪后入队（不再 17:00 盲目并行触发）。
+    # 依赖表完成时会通过 _try_enqueue_mainline_if_ready 主动触发；
+    # 这里作为兜底：每 30s 轮询一次就绪状态。
+    if job == MAINLINE_JOB:
+        from xshare.data.db import get_conn
+        ready, target = _mainline_deps_ready()
+        if ready:
+            try:
+                cached_date = get_conn().execute(
+                    "SELECT MAX(trade_date) FROM mainline_cache"
+                ).fetchone()[0]
+            except Exception:
+                cached_date = None
+            if cached_date is None or str(cached_date) < str(target):
+                try:
+                    task_id = enqueue(job, trigger="schedule", priority=3)
+                    logger.info(
+                        "mainline 依赖就绪(target=%s, cached=%s)，入队 #%d",
+                        target, cached_date, task_id,
+                    )
+                except Exception as exc:
+                    logger.warning("mainline 入队失败: %s", exc)
+            else:
+                logger.debug("mainline 缓存已最新(cached=%s=target)，跳过", target)
+        else:
+            logger.debug("mainline 依赖未就绪（缺 %s），等待", target)
 
     # daily / index_daily：补洞（watermark 缺口）
     if job == DAILY_JOB:
@@ -1026,6 +1116,23 @@ async def _calendar_loop_iteration(job: str, cfg: dict) -> None:
                 logger.info("ETF 日线补洞 %d 天，已入队 backfill #%d", len(gaps), task_id)
         except Exception as exc:
             logger.debug("ETF 日线补洞扫描失败: %s", exc)
+
+
+    if job == MONEYFLOW_JOB:
+        try:
+            from xshare.data.sources.tushare_source import find_missing_moneyflow_dates
+            gaps = find_missing_moneyflow_dates(_env_int("XSHARE_MONEYFLOW_GAP_LOOKBACK", 30))
+            if gaps:
+                days = max(len(gaps), _env_int("XSHARE_MONEYFLOW_SYNC_DAYS", 1))
+                task_id = enqueue(
+                    MONEYFLOW_JOB,
+                    payload={"days": days, "backfill": True},
+                    trigger="schedule",
+                    priority=2,
+                )
+                logger.info("个股资金流向补洞 %d 天，已入队 backfill #%d", len(gaps), task_id)
+        except Exception as exc:
+            logger.debug("个股资金流向补洞扫描失败: %s", exc)
 
     # 窗口内已处理：睡到次日，避免重复入队
     await asyncio.sleep(_POLL_SECONDS)

@@ -13,6 +13,7 @@ import {
   type CoverageBundle,
   type DailyCoverage,
 } from "@/lib/api";
+import { fmtInterval } from "@/lib/format";
 import { Skeleton } from "@/components/Skeleton";
 import {
   Play,
@@ -380,7 +381,7 @@ function JobsTable({
         const scheduleLabel =
           job.schedule === "calendar_1700"
             ? "交易日 17:00"
-            : `每 ${job.interval_minutes ?? "-"} 分钟`;
+          : `每 ${fmtInterval(job.interval_minutes)}`;
         return (
           <tr
             key={job.job}

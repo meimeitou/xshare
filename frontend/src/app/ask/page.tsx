@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -8,7 +8,6 @@ import {
   getSessions,
   getHistory,
   deleteSession as deleteSessionApi,
-  type ChatEvent,
   type ChatSession,
   type HistoryMessage,
 } from "@/lib/api";
@@ -22,6 +21,8 @@ import {
   Plus,
   List,
   Trash,
+  Copy,
+  Check,
 } from "@phosphor-icons/react";
 
 interface Message {
@@ -41,14 +42,33 @@ const PRESET_QUESTIONS = [
 export default function AskPage() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSession, setActiveSession] = useState<string>("");
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messagesBySession, setMessagesBySession] = useState<Record<string, Message[]>>({});
+  const [loadingBySession, setLoadingBySession] = useState<Record<string, boolean>>({});
   const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  const abortRef = useRef<AbortController | null>(null);
+  const abortRef = useRef<Record<string, AbortController | null>>({});
+  const inflightRef = useRef<Set<string>>(new Set());
+  const initializedRef = useRef<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const messages = useMemo(
+    () => (activeSession ? messagesBySession[activeSession] ?? [] : []),
+    [activeSession, messagesBySession],
+  );
+  const loading = activeSession ? loadingBySession[activeSession] ?? false : false;
+
+  const startNewSession = useCallback(() => {
+    const sid = crypto.randomUUID();
+    setSessions((prev) => [
+      { session_id: sid, title: "新对话", message_count: 0 },
+      ...prev,
+    ]);
+    setActiveSession(sid);
+    initializedRef.current.add(sid);
+    setMessagesBySession((prev) => ({ ...prev, [sid]: [] }));
+  }, []);
+
 
   /* On mount: load sessions, pick last active or create new */
   useEffect(() => {
@@ -60,7 +80,8 @@ export default function AskPage() {
           const sid = list[0].session_id;
           setActiveSession(sid);
           const history = await getHistory(sid);
-          setMessages(history.map(historyToMessage));
+          initializedRef.current.add(sid);
+          setMessagesBySession((prev) => ({ ...prev, [sid]: history.map(historyToMessage) }));
         } else {
           startNewSession();
         }
@@ -68,10 +89,10 @@ export default function AskPage() {
         startNewSession();
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [startNewSession]);
 
-  /* auto-scroll on new messages */
+
+  /* auto-scroll on new messages of the active session */
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -84,84 +105,106 @@ export default function AskPage() {
     el.style.height = Math.min(el.scrollHeight, 160) + "px";
   }, [input]);
 
-  const startNewSession = useCallback(() => {
-    const sid = crypto.randomUUID();
-    setSessions((prev) => [
-      { session_id: sid, title: "新对话", message_count: 0 },
-      ...prev,
-    ]);
-    setActiveSession(sid);
-    setMessages([]);
-  }, []);
 
   const switchSession = useCallback(
     async (sid: string) => {
-      if (loading) return;
       setSidebarOpen(false);
       setActiveSession(sid);
+      // Load history lazily; reuse cached messages (incl. live streaming updates) thereafter
+      if (initializedRef.current.has(sid)) return;
       try {
         const history = await getHistory(sid);
-        setMessages(history.map(historyToMessage));
+        initializedRef.current.add(sid);
+        setMessagesBySession((prev) => ({ ...prev, [sid]: history.map(historyToMessage) }));
       } catch {
-        setMessages([]);
+        initializedRef.current.add(sid);
+        setMessagesBySession((prev) => ({ ...prev, [sid]: [] }));
       }
     },
-    [loading],
+    [],
   );
 
   const deleteSession = useCallback(
     async (sid: string) => {
-      if (loading) return;
+      // Abort any in-flight stream for this session, regardless of active view
+      abortRef.current[sid]?.abort();
+      delete abortRef.current[sid];
+      inflightRef.current.delete(sid);
+      setLoadingBySession((prev) => {
+        if (!prev[sid]) return prev;
+        const next = { ...prev };
+        delete next[sid];
+        return next;
+      });
       // Call backend to delete session state
       try { await deleteSessionApi(sid); } catch { /* non-critical */ }
+      initializedRef.current.delete(sid);
+      setMessagesBySession((prev) => {
+        if (!(sid in prev)) return prev;
+        const next = { ...prev };
+        delete next[sid];
+        return next;
+      });
       setSessions((prev) => prev.filter((s) => s.session_id !== sid));
       if (activeSession === sid) {
         const remaining = sessions.filter((s) => s.session_id !== sid);
         if (remaining.length > 0) {
           const nextSid = remaining[0].session_id;
           setActiveSession(nextSid);
-          try {
-            const history = await getHistory(nextSid);
-            setMessages(history.map(historyToMessage));
-          } catch {
-            setMessages([]);
+          if (!initializedRef.current.has(nextSid)) {
+            try {
+              const history = await getHistory(nextSid);
+              initializedRef.current.add(nextSid);
+              setMessagesBySession((prev) => ({ ...prev, [nextSid]: history.map(historyToMessage) }));
+            } catch {
+              initializedRef.current.add(nextSid);
+              setMessagesBySession((prev) => ({ ...prev, [nextSid]: [] }));
+            }
           }
         } else {
           startNewSession();
         }
       }
     },
-    [loading, activeSession, sessions, startNewSession],
+    [activeSession, sessions, startNewSession],
   );
 
   const send = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
-      if (!trimmed || loading || !activeSession) return;
+      if (!trimmed || !activeSession) return;
+      const sid = activeSession;
+      // Guard against double-send on the same session (ref = synchronous, no stale state)
+      if (inflightRef.current.has(sid)) return;
+      inflightRef.current.add(sid);
 
       setInput("");
-      setLoading(true);
+      setLoadingBySession((prev) => ({ ...prev, [sid]: true }));
 
       const userMsg: Message = { role: "user", content: trimmed };
       const assistantMsg: Message = { role: "assistant", content: "", streaming: true };
-      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      setMessagesBySession((prev) => ({
+        ...prev,
+        [sid]: [...(prev[sid] ?? []), userMsg, assistantMsg],
+      }));
 
       // Update session title if it was "新对话"
       setSessions((prev) =>
         prev.map((s) =>
-          s.session_id === activeSession && s.title === "新对话"
+          s.session_id === sid && s.title === "新对话"
             ? { ...s, title: trimmed.slice(0, 40), message_count: s.message_count + 2 }
             : s,
         ),
       );
 
       const ac = new AbortController();
-      abortRef.current = ac;
+      abortRef.current[sid] = ac;
 
       try {
-        for await (const ev of streamChat(activeSession, trimmed, ac.signal)) {
-          setMessages((prev) => {
-            const next = [...prev];
+        for await (const ev of streamChat(sid, trimmed, ac.signal)) {
+          setMessagesBySession((prev) => {
+            const cur = prev[sid] ?? [];
+            const next = [...cur];
             const last = next[next.length - 1];
             if (!last || last.role !== "assistant") return prev;
 
@@ -196,7 +239,7 @@ export default function AskPage() {
                 };
                 break;
             }
-            return next;
+            return { ...prev, [sid]: next };
           });
         }
         // Refresh session list to get updated counts
@@ -206,17 +249,19 @@ export default function AskPage() {
         } catch { /* non-critical */ }
       } catch (e) {
         if ((e as Error).name === "AbortError") {
-          setMessages((prev) => {
-            const next = [...prev];
+          setMessagesBySession((prev) => {
+            const cur = prev[sid] ?? [];
+            const next = [...cur];
             const last = next[next.length - 1];
             if (last && last.role === "assistant" && last.streaming) {
               next[next.length - 1] = { ...last, streaming: false, content: last.content + "\n\n[已取消]" };
             }
-            return next;
+            return { ...prev, [sid]: next };
           });
         } else {
-          setMessages((prev) => {
-            const next = [...prev];
+          setMessagesBySession((prev) => {
+            const cur = prev[sid] ?? [];
+            const next = [...cur];
             const last = next[next.length - 1];
             if (last && last.role === "assistant") {
               next[next.length - 1] = {
@@ -225,15 +270,21 @@ export default function AskPage() {
                 streaming: false,
               };
             }
-            return next;
+            return { ...prev, [sid]: next };
           });
         }
       } finally {
-        setLoading(false);
-        abortRef.current = null;
+        inflightRef.current.delete(sid);
+        setLoadingBySession((prev) => {
+          if (!prev[sid]) return prev;
+          const next = { ...prev };
+          delete next[sid];
+          return next;
+        });
+        if (abortRef.current[sid] === ac) delete abortRef.current[sid];
       }
     },
-    [loading, activeSession],
+    [activeSession],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -244,7 +295,7 @@ export default function AskPage() {
   };
 
   const cancel = () => {
-    abortRef.current?.abort();
+    if (activeSession) abortRef.current[activeSession]?.abort();
   };
 
   return (
@@ -257,7 +308,7 @@ export default function AskPage() {
         sessions={sessions}
         activeSession={activeSession}
         open={sidebarOpen}
-        loading={loading}
+        loadingBySession={loadingBySession}
         onNew={startNewSession}
         onSwitch={switchSession}
         onDelete={deleteSession}
@@ -301,14 +352,12 @@ export default function AskPage() {
           <div className="ml-auto md:hidden">
             <button
               onClick={startNewSession}
-              disabled={loading}
               className="flex items-center gap-1 px-3 py-1.5 text-xs"
               style={{
                 borderRadius: "var(--radius-sm)",
                 border: "1px solid var(--border)",
                 background: "var(--bg-elevated)",
                 color: "var(--text-muted)",
-                opacity: loading ? 0.5 : 1,
               }}
             >
               <Plus size={14} weight="bold" />
@@ -431,7 +480,7 @@ function SessionSidebar({
   sessions,
   activeSession,
   open,
-  loading,
+  loadingBySession,
   onNew,
   onSwitch,
   onDelete,
@@ -440,7 +489,7 @@ function SessionSidebar({
   sessions: ChatSession[];
   activeSession: string;
   open: boolean;
-  loading: boolean;
+  loadingBySession: Record<string, boolean>;
   onNew: () => void;
   onSwitch: (sid: string) => void;
   onDelete: (sid: string) => void;
@@ -486,14 +535,12 @@ function SessionSidebar({
         <div className="px-3 py-2">
           <button
             onClick={onNew}
-            disabled={loading}
             className="w-full flex items-center gap-2 px-3 py-2 text-sm font-medium transition-colors"
             style={{
               borderRadius: "var(--radius-sm)",
               border: "1px solid var(--accent)",
               background: "var(--accent-soft)",
               color: "var(--accent-strong)",
-              opacity: loading ? 0.5 : 1,
             }}
           >
             <Plus size={14} weight="bold" />
@@ -533,7 +580,7 @@ function SessionSidebar({
                     >
                       {s.title || "(空对话)"}
                     </span>
-                    {active && loading && (
+                    {loadingBySession[s.session_id] && (
                       <span
                         className="inline-block w-3 h-3 rounded-full animate-spin shrink-0"
                         style={{
@@ -544,7 +591,7 @@ function SessionSidebar({
                     )}
                   </div>
                   <span className="text-xs" style={{ color: "var(--text-dim)" }}>
-                    {active && loading ? "AI 思考中…" : `${s.message_count} 条消息`}
+                    {loadingBySession[s.session_id] ? "AI 思考中…" : `${s.message_count} 条消息`}
                   </span>
                 </button>
                 <button
@@ -566,6 +613,20 @@ function SessionSidebar({
 /* ------ Message bubble ------------------------------------------------------ */
 function MessageBubble({ msg }: { msg: Message }) {
   const isUser = msg.role === "user";
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(msg.content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }, [msg.content]);
+
+  const canCopy = !isUser && msg.content && !msg.streaming;
+
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
@@ -607,11 +668,24 @@ function MessageBubble({ msg }: { msg: Message }) {
             )}
           </div>
         )}
+
+        {/* Copy button */}
+        {canCopy && (
+          <div className="mt-2 flex justify-end">
+            <button
+              onClick={handleCopy}
+              className="flex items-center gap-1 text-xs transition-colors"
+              style={{ color: copied ? "var(--success, var(--accent))" : "var(--text-dim)" }}
+            >
+              {copied ? <Check size={12} weight="bold" /> : <Copy size={12} />}
+              {copied ? "已复制" : "复制"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
 }
-
 /* ------ Tool call item (collapsible) --------------------------------------- */
 function ToolCallItem({ tc }: { tc: { name: string; args: string; result: string } }) {
   const [open, setOpen] = useState(false);

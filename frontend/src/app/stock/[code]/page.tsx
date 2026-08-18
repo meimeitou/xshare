@@ -67,6 +67,26 @@ interface NewsItem {
   tags?: string[];
 }
 
+interface MoneyflowDaily {
+  trade_date: string;
+  sm_net_amount: number;
+  md_net_amount: number;
+  lg_net_amount: number;
+  elg_net_amount: number;
+  net_mf_amount: number;
+  main_force_net: number;
+  retail_net: number;
+  divergence: string;
+}
+interface MoneyflowData {
+  code: string;
+  daily: MoneyflowDaily[];
+  summary: Omit<MoneyflowDaily, "trade_date"> & { days: number };
+  latest_date: string;
+  source: string;
+  error?: string;
+}
+
 /* ------ Helpers ---------------------------------------------------------------------------------------------------------------------------- */
 const INDICATOR_TABS = ["MACD", "RSI", "KDJ", "BOLL"] as const;
 const PERIOD_TABS = ["daily", "weekly", "monthly"] as const;
@@ -356,6 +376,14 @@ export default function StockDetailPage({
     ? newsRaw
     : ((newsRaw as { news?: NewsItem[] })?.news ?? []);
 
+  const { data: moneyflowRaw } = useSWR<MoneyflowData & { error?: string }>(
+    `/api/stock/${code}/moneyflow?days=10`,
+    fetcher,
+    { revalidateOnFocus: false },
+  );
+  const moneyflow =
+    moneyflowRaw && !moneyflowRaw.error ? moneyflowRaw : undefined;
+
   const bars = useMemo(() => {
     if (!indicators?.bars) return [];
     return indicators.bars.map((b) => ({
@@ -364,6 +392,7 @@ export default function StockDetailPage({
       high: b.high,
       low: b.low,
       close: b.close,
+      volume: b.volume ?? 0,
     }));
   }, [indicators]);
 
@@ -447,7 +476,7 @@ export default function StockDetailPage({
         {loadingI ? (
           <Skeleton style={{ height: "320px" }} />
         ) : bars.length > 0 ? (
-          <StockChart bars={bars} maLines={maLines} height={320} />
+          <StockChart bars={bars} maLines={maLines} height={380} />
         ) : (
           <div
             style={{
@@ -509,6 +538,108 @@ export default function StockDetailPage({
           )}
         </div>
       </div>
+
+      {/* MoneyFlow — 四档资金流向 */}
+      {moneyflow && (() => {
+        const s = moneyflow.summary;
+        const tier = (label: string, val: number, title: string) => (
+          <span
+            className="mono text-xs"
+            style={{ color: val >= 0 ? "var(--up)" : "var(--down)" }}
+            title={title}
+          >
+            {label}{val >= 0 ? "+" : ""}{val.toFixed(1)}
+          </span>
+        );
+        const divColor = s.divergence.includes("吸筹") ? "var(--up)"
+          : s.divergence.includes("派发") ? "var(--down)"
+          : "var(--text-dim)";
+        return (
+          <section
+            style={{
+              background: "var(--bg-panel)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              padding: "12px 16px",
+            }}
+          >
+            <h2
+              className="text-sm font-medium mb-3 flex items-center gap-2"
+              style={{ color: "var(--text-muted)" }}
+            >
+              资金流向
+              <span className="text-xs mono" style={{ color: "var(--text-dim)" }}>
+                近 {s.days} 日 · 截至 {moneyflow.latest_date}
+              </span>
+            </h2>
+            {/* 汇总条 */}
+            <div
+              className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 mb-3"
+              style={{
+                background: "var(--bg-raised)",
+                borderRadius: "var(--radius-sm)",
+              }}
+            >
+              {tier("散", s.sm_net_amount, "小单净额（散户）")}
+              {tier("中", s.md_net_amount, "中单净额（中户）")}
+              {tier("大", s.lg_net_amount, "大单净额（大户/游资）")}
+              {tier("机", s.elg_net_amount, "特大单净额（机构）")}
+              <span className="mono text-xs" style={{ color: "var(--text-dim)" }}>
+                合力
+                <span style={{ color: s.net_mf_amount >= 0 ? "var(--up)" : "var(--down)" }}>
+                  {" "}{s.net_mf_amount >= 0 ? "+" : ""}{s.net_mf_amount.toFixed(1)}
+                </span>
+              </span>
+              <span
+                className="text-xs px-1.5 py-0.5 rounded"
+                style={{ color: divColor, border: `1px solid ${divColor}` }}
+              >
+                {s.divergence}
+              </span>
+            </div>
+            {/* 每日明细 */}
+            <div className="flex flex-col">
+              <div
+                className="flex items-center px-2 py-1.5 text-xs"
+                style={{ color: "var(--text-dim)", borderBottom: "1px solid var(--border)" }}
+              >
+                <span className="flex-1">日期</span>
+                <span className="w-16 text-right">散</span>
+                <span className="w-16 text-right">中</span>
+                <span className="w-16 text-right">大</span>
+                <span className="w-16 text-right">机</span>
+                <span className="w-20 text-right">合力</span>
+              </div>
+              {moneyflow.daily.map((d) => (
+                <div
+                  key={d.trade_date}
+                  className="flex items-center px-2 py-1.5 text-xs mono"
+                  style={{ borderBottom: "1px solid var(--border-dim, var(--border))" }}
+                >
+                  <span className="flex-1" style={{ color: "var(--text-muted)" }}>
+                    {d.trade_date}
+                  </span>
+                  <span className="w-16 text-right" style={{ color: d.sm_net_amount >= 0 ? "var(--up)" : "var(--down)" }}>
+                    {d.sm_net_amount >= 0 ? "+" : ""}{d.sm_net_amount.toFixed(1)}
+                  </span>
+                  <span className="w-16 text-right" style={{ color: d.md_net_amount >= 0 ? "var(--up)" : "var(--down)" }}>
+                    {d.md_net_amount >= 0 ? "+" : ""}{d.md_net_amount.toFixed(1)}
+                  </span>
+                  <span className="w-16 text-right" style={{ color: d.lg_net_amount >= 0 ? "var(--up)" : "var(--down)" }}>
+                    {d.lg_net_amount >= 0 ? "+" : ""}{d.lg_net_amount.toFixed(1)}
+                  </span>
+                  <span className="w-16 text-right" style={{ color: d.elg_net_amount >= 0 ? "var(--up)" : "var(--down)" }}>
+                    {d.elg_net_amount >= 0 ? "+" : ""}{d.elg_net_amount.toFixed(1)}
+                  </span>
+                  <span className="w-20 text-right" style={{ color: d.net_mf_amount >= 0 ? "var(--up)" : "var(--down)" }}>
+                    {d.net_mf_amount >= 0 ? "+" : ""}{d.net_mf_amount.toFixed(1)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+        );
+      })()}
 
       {/* Fundamentals */}
       {fundamentals && (

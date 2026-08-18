@@ -15,6 +15,7 @@ Endpoints 一览:
   GET  /api/stock/{code}/indicators?indicators=MA,MACD&period=daily
   GET  /api/stock/{code}/fundamentals
   GET  /api/stock/{code}/news?days=7
+  GET  /api/stock/{code}/moneyflow?days=10
   GET  /api/portfolio
   POST /api/portfolio          body: {action, code, price, quantity, trade_date?, memo?}
   DELETE /api/portfolio/{id}
@@ -358,6 +359,11 @@ async def stock_fundamentals_endpoint(code: str):
 async def stock_news_endpoint(code: str, days: int = Query(7, ge=1, le=90)):
     from xshare.tools.stock_news import stock_news
     return _parse(await _invoke_tool(stock_news, {"code": code, "days": days}))
+
+@app.get("/api/stock/{code}/moneyflow", tags=["Stock"], summary="个股资金流向")
+async def stock_moneyflow_endpoint(code: str, days: int = Query(10, ge=1, le=60)):
+    from xshare.tools.stock_moneyflow import stock_moneyflow
+    return _parse(await _invoke_tool(stock_moneyflow, {"code": code, "days": days}))
 
 
 # ---------------------------------------------------------------------------

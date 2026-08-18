@@ -60,3 +60,42 @@ def test_get_all_includes_next_run_at_and_new_jobs(db_conn):
             assert j["next_run_at"] is not None
         if j["job"] in sync_config.CALENDAR_JOBS:
             assert j["schedule"] == "calendar_1700"
+
+
+def test_mainline_deps_ready_all_tables_aligned(db_conn):
+    """所有依赖表都达到 stock_daily 最新交易日 → ready=True。"""
+    db_conn.execute("INSERT INTO stock_daily (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
+    db_conn.execute("INSERT INTO concept_board (trade_date, code) VALUES ('2026-08-17', 'BK0001')")
+    db_conn.execute("INSERT INTO limit_list (trade_date, code, limit_type) VALUES ('2026-08-17', '000001.SZ', 'U')")
+    db_conn.execute("INSERT INTO sector_moneyflow (trade_date, content_type, code) VALUES ('2026-08-17', '概念', 'BK0001')")
+    db_conn.execute("INSERT INTO stock_moneyflow (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
+    db_conn.execute("INSERT INTO concept_member (trade_date, code, concept_code) VALUES ('2026-08-17', '000001.SZ', 'BK0001')")
+    ready, target = sync_config._mainline_deps_ready()
+    assert ready is True
+    assert target == "2026-08-17"
+
+
+def test_mainline_deps_ready_missing_table(db_conn):
+    """某依赖表落后 → ready=False, info=表名。"""
+    db_conn.execute("INSERT INTO stock_daily (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
+    db_conn.execute("INSERT INTO concept_board (trade_date, code) VALUES ('2026-08-17', 'BK0001')")
+    db_conn.execute("INSERT INTO limit_list (trade_date, code, limit_type) VALUES ('2026-08-17', '000001.SZ', 'U')")
+    db_conn.execute("INSERT INTO sector_moneyflow (trade_date, content_type, code) VALUES ('2026-08-17', '概念', 'BK0001')")
+    db_conn.execute("INSERT INTO stock_moneyflow (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
+    # concept_member 缺失
+    ready, info = sync_config._mainline_deps_ready()
+    assert ready is False
+    assert info == "concept_member"
+
+
+def test_mainline_deps_ready_stale_table(db_conn):
+    """某依赖表日期落后 → ready=False。"""
+    db_conn.execute("INSERT INTO stock_daily (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
+    db_conn.execute("INSERT INTO concept_board (trade_date, code) VALUES ('2026-08-17', 'BK0001')")
+    db_conn.execute("INSERT INTO limit_list (trade_date, code, limit_type) VALUES ('2026-08-17', '000001.SZ', 'U')")
+    db_conn.execute("INSERT INTO sector_moneyflow (trade_date, content_type, code) VALUES ('2026-08-17', '概念', 'BK0001')")
+    db_conn.execute("INSERT INTO stock_moneyflow (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
+    db_conn.execute("INSERT INTO concept_member (trade_date, code, concept_code) VALUES ('2026-08-12', '000001.SZ', 'BK0001')")
+    ready, info = sync_config._mainline_deps_ready()
+    assert ready is False
+    assert info == "concept_member"

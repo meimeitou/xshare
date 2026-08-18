@@ -1,3 +1,17 @@
+/** Format a minute count as "x 小时 y 分钟" (omit zero parts).
+ *  60 → "1 小时", 90 → "1 小时 30 分钟", 30 → "30 分钟", 10080 → "7 天". */
+export function fmtInterval(minutes: number | null | undefined): string {
+  if (minutes == null || isNaN(minutes) || minutes <= 0) return "-";
+  const d = Math.floor(minutes / 1440);
+  const h = Math.floor((minutes % 1440) / 60);
+  const m = minutes % 60;
+  const parts: string[] = [];
+  if (d > 0) parts.push(`${d} 天`);
+  if (h > 0) parts.push(`${h} 小时`);
+  if (m > 0) parts.push(`${m} 分钟`);
+  return parts.length > 0 ? parts.join(" ") : "0 分钟";
+}
+
 /** Format a price number with 2 decimal places */
 export function fmtPrice(n: number | null | undefined, prefix = ""): string {
   if (n == null || isNaN(n)) return "-";

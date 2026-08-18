@@ -16,6 +16,7 @@ from xshare.tools.stock_quote import stock_quote
 from xshare.tools.stock_indicators import stock_indicators
 from xshare.tools.stock_fundamentals import stock_fundamentals
 from xshare.tools.stock_news import stock_news
+from xshare.tools.stock_moneyflow import stock_moneyflow
 from xshare.tools.screener import stock_screen
 from xshare.tools.backtest import backtest_run
 from xshare.tools.market_overview import market_overview
@@ -84,6 +85,14 @@ TOOLS: dict[str, tuple] = {
             "keyword": {"type": "string", "description": "搜索关键词（可选）"},
             "days": {"type": "integer", "description": "查询最近几天的新闻", "default": 7},
         },
+    }),
+    "stock_moneyflow": (stock_moneyflow, {
+        "type": "object",
+        "properties": {
+            "code": {"type": "string", "description": "股票代码"},
+            "days": {"type": "integer", "description": "查询最近几个交易日的资金流向", "default": 10},
+        },
+        "required": ["code"],
     }),
     "stock_screen": (stock_screen, {
         "type": "object",
@@ -378,6 +387,7 @@ def _get_tool_description(name: str) -> str:
         "stock_indicators": "计算股票技术指标（MA/MACD/RSI/KDJ/BOLL/ATR）",
         "stock_fundamentals": "获取股票基本面数据（PE/PB/ROE/营收增速等）",
         "stock_news": "查询个股相关新闻，支持按代码或关键词检索",
+        "stock_moneyflow": "查询个股资金流向（四档净额：散户/中户/大户/机构 + 背离标签）",
         "stock_screen": "按条件筛选股票（PE/PB/ROE/行业等多维度筛选）",
         "backtest_run": "策略回测（均线交叉、RSI等策略的历史回测）",
         "market_overview": "大盘概览（主要指数、板块涨跌、市场情绪）",

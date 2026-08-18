@@ -4,18 +4,20 @@ import { useEffect, useRef, useState } from "react";
 import {
   createChart,
   CandlestickSeries,
+  HistogramSeries,
   LineSeries,
   ColorType,
   TickMarkType,
   type IChartApi,
   type ISeriesApi,
   type CandlestickData,
+  type HistogramData,
   type LineData,
   type BarData,
   type Time,
   type MouseEventParams,
 } from "lightweight-charts";
-import { fmtDate, fmtPrice } from "@/lib/format";
+import { fmtDate, fmtPrice, fmtVol } from "@/lib/format";
 
 export interface OHLCBar {
   time: string; // "YYYY-MM-DD"
@@ -23,6 +25,7 @@ export interface OHLCBar {
   high: number;
   low: number;
   close: number;
+  volume?: number;
 }
 
 export interface MALine {
@@ -42,6 +45,7 @@ interface TooltipData {
   open: number; high: number; low: number; close: number;
   prevClose: number | null; // previous bar's close, for OHLC coloring
   ma: { label: string; color: string; value: number }[];
+  volume: number | null;
 }
 
 /** A-share convention: red = up, green = down. Colors a value relative to prevClose. */
@@ -56,6 +60,7 @@ export function StockChart({ bars, maLines = [], height = 320 }: StockChartProps
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef     = useRef<IChartApi | null>(null);
   const candlesRef   = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const volumeRef    = useRef<ISeriesApi<"Histogram"> | null>(null);
   const maSeriesRef  = useRef<{ series: ISeriesApi<"Line">; label: string; color: string }[]>([]);
   const [tip, setTip] = useState<TooltipData | null>(null);
 
@@ -106,6 +111,37 @@ export function StockChart({ bars, maLines = [], height = 320 }: StockChartProps
     candles.setData(bars as CandlestickData[]);
     candlesRef.current = candles;
 
+    // Reserve bottom ~28% for the volume overlay pane (single chart, dual price scale)
+    chart.priceScale("right").applyOptions({
+      scaleMargins: { top: 0.05, bottom: 0.28 },
+    });
+
+    // Volume histogram on an overlay scale ("") so it shares the time axis but not the price axis
+    const volumeSeries = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: "volume" },
+      priceScaleId: "",
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+    volumeSeries.priceScale().applyOptions({
+      scaleMargins: { top: 0.72, bottom: 0 },
+    });
+    const hasVolume = bars.some((b) => (b.volume ?? 0) > 0);
+    if (hasVolume) {
+      const volData: HistogramData[] = bars.map((b) => {
+        const up = b.close >= b.open;
+        return {
+          time: b.time as Time,
+          value: b.volume ?? 0,
+          color: up ? upHex : downHex,
+        };
+      });
+      volumeSeries.setData(volData);
+      volumeRef.current = volumeSeries;
+    } else {
+      volumeRef.current = null;
+    }
+
     maSeriesRef.current = [];
     for (const ma of maLines) {
       const series = chart.addSeries(LineSeries, {
@@ -139,7 +175,11 @@ export function StockChart({ bars, maLines = [], height = 320 }: StockChartProps
           return d ? { label, color, value: d.value } : null;
         })
         .filter((x): x is { label: string; color: string; value: number } => x !== null);
-      setTip({ date: dateStr, open: cd.open, high: cd.high, low: cd.low, close: cd.close, prevClose, ma });
+      const volFromSeries = volumeRef.current
+        ? (param.seriesData.get(volumeRef.current) as HistogramData | undefined)?.value ?? null
+        : null;
+      const volume = volFromSeries ?? (idx >= 0 ? (bars[idx].volume ?? null) : null);
+      setTip({ date: dateStr, open: cd.open, high: cd.high, low: cd.low, close: cd.close, prevClose, ma, volume });
     };
     chart.subscribeCrosshairMove(onMove);
 
@@ -150,6 +190,7 @@ export function StockChart({ bars, maLines = [], height = 320 }: StockChartProps
       chart.remove();
       chartRef.current = null;
       candlesRef.current = null;
+      volumeRef.current = null;
       maSeriesRef.current = [];
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -185,6 +226,9 @@ export function StockChart({ bars, maLines = [], height = 320 }: StockChartProps
           <div>
             低 <span style={{ color: ohlcColor(tip.low, tip.prevClose) }}>{fmtPrice(tip.low)}</span>
             收 <span style={{ color: ohlcColor(tip.close, tip.prevClose) }}>{fmtPrice(tip.close)}</span>
+          </div>
+          <div>
+            量 <span style={{ color: "var(--text)" }}>{tip.volume != null ? fmtVol(tip.volume) : "-"}</span>
           </div>
           {tip.ma.length > 0 && (
             <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
