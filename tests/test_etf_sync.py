@@ -15,7 +15,7 @@ def test_sync_config_includes_etf_jobs(db_conn):
     assert "etf_basic" in jobs
     assert "fund_daily" in jobs
     assert jobs["etf_basic"]["schedule"] == "interval"
-    assert jobs["fund_daily"]["schedule"] == "calendar_1700"
+    assert jobs["fund_daily"]["schedule"] == "calendar_1600"
     assert "fund_daily" in sync_config.CALENDAR_JOBS
 
 

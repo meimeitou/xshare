@@ -221,7 +221,7 @@ ALTER TABLE sync_watermark ADD COLUMN IF NOT EXISTS key_type VARCHAR;
 UPDATE sync_watermark SET key_type = CASE
     WHEN dataset IN ('daily', 'index_daily', 'fund_daily', 'daily_basic',
                      'moneyflow', 'sector_moneyflow', 'market_moneyflow',
-                     'limit_list', 'top_list', 'concept_board', 'concept_member') THEN 'date'
+                     'limit_list', 'concept_board', 'concept_member') THEN 'date'
     WHEN dataset IN ('stock_basic', 'index_basic', 'etf_basic', 'trade_cal', 'news') THEN 'all'
     WHEN dataset IN ('finance', 'fund_nav') THEN 'code'
     ELSE NULL
@@ -355,25 +355,6 @@ CREATE TABLE IF NOT EXISTS limit_list (
     PRIMARY KEY (trade_date, code, limit_type)
 );
 
--- 龙虎榜（Tushare top_list）
-CREATE TABLE IF NOT EXISTS top_list (
-    trade_date     DATE NOT NULL,
-    code           VARCHAR NOT NULL,
-    name           VARCHAR,
-    close          DOUBLE,
-    pct_change     DOUBLE,
-    turnover_rate  DOUBLE,
-    amount         DOUBLE,
-    l_buy          DOUBLE,
-    l_sell         DOUBLE,
-    l_amount       DOUBLE,
-    net_amount     DOUBLE,
-    net_rate       DOUBLE,
-    amount_rate    DOUBLE,
-    float_values   DOUBLE,
-    reason         VARCHAR,
-    PRIMARY KEY (trade_date, code)
-);
 
 -- 概念题材板块（Tushare dc_concept）
 CREATE TABLE IF NOT EXISTS concept_board (

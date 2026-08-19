@@ -263,9 +263,20 @@ class TushareProvider(DataProvider):
     # ─── 北向资金 ────────────────────────────────────────────
 
     def get_northbound_flow(self) -> dict:
-        trade_date = self._latest_trade_date()
+        """北向资金净流入 — Tushare moneyflow_hsgt（日终数据，非盘中实时）。
+
+        2024-08-19 起东财停止披露北向资金盘中实时数据，AkShare 的东财北向实时
+        接口（stock_hsgt_fund_flow_summary_em / stock_hsgt_fund_min_em）全部
+        返回 0/NaN，已无可用盘中实时来源。此处只走 Tushare 日终接口。
+
+        end_date 用今天而非 _latest_trade_date()：后者锚定本地 stock_daily 水位，
+        盘后 daily 同步（16:00+）前会回退到昨天，把 Tushare 已发布的当日数据
+        挡掉。moneyflow_hsgt 的 end_date 给今天即可，盘中 Tushare 无数据时 df
+        自然为空，回退到最新一行（昨日）。
+        """
+        today = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
-        df = self._client.call("moneyflow_hsgt", start_date=start, end_date=trade_date)
+        df = self._client.call("moneyflow_hsgt", start_date=start, end_date=today)
         if df.empty:
             return {"total": 0, "sh_connect": 0, "sz_connect": 0, "date": ""}
         latest = df.sort_values("trade_date", ascending=False).iloc[0]

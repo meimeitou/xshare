@@ -13,7 +13,7 @@ def test_sync_config_includes_moneyflow_job(db_conn):
     sync_config.init_sync_config()
     jobs = {j["job"]: j for j in sync_config.get_all()}
     assert "moneyflow" in jobs
-    assert jobs["moneyflow"]["schedule"] == "calendar_1700"
+    assert jobs["moneyflow"]["schedule"] == "calendar_1600"
     assert "moneyflow" in sync_config.CALENDAR_JOBS
 
 

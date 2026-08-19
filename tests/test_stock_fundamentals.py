@@ -89,3 +89,27 @@ async def test_stock_fundamentals_nan_is_json_safe(monkeypatch):
     assert data["profit_yoy"] is None
     assert isinstance(data["end_date"], str)
     assert not any(isinstance(v, float) and (math.isnan(v) or math.isinf(v)) for v in data.values())
+
+
+@pytest.mark.asyncio
+async def test_stock_fundamentals_pe_pb_backfilled_from_daily_basic(db_conn, monkeypatch):
+    """stock_finance 的 pe/pb 列恒 NULL（fina_indicator 不返回），
+    应从 stock_daily_basic 回填最新一期的 pe/pb。"""
+    db_conn.execute(
+        "INSERT INTO stock_finance (code,end_date,pe,pb,roe,revenue,net_profit,revenue_yoy,profit_yoy) "
+        "VALUES ('002594.SZ', '2026-03-31', NULL, NULL, 15.0, 1000, 120, 20.0, 25.0)"
+    )
+    db_conn.execute(
+        "INSERT INTO stock_daily_basic VALUES ('002594.SZ', '2026-08-18', 28.5, 4.2, 3.1, 7.2e11, 6.8e11, 1.2)"
+    )
+
+    from xshare.data.provider import ProviderManager
+    provider = ProviderManager()
+
+    monkeypatch.setattr(stock_fundamentals, "get_provider", lambda: provider)
+    resp = await stock_fundamentals.stock_fundamentals({"code": "002594.SZ"})
+    data = json.loads(resp)
+
+    assert data["pe"] == 28.5
+    assert data["pb"] == 4.2
+    assert data["roe"] == 15.0  # ROE 仍来自 stock_finance

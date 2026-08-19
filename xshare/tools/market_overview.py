@@ -61,6 +61,22 @@ def _build_sectors(top_up, top_down) -> tuple[list, list]:
     return up, down
 
 
+
+def _mark_northbound_stale(northbound: dict) -> None:
+    """标记北向资金是否为非当日数据（盘中无实时来源，回退昨日）。
+
+    2024-08-19 起东财停止披露北向资金盘中实时数据，Tushare moneyflow_hsgt
+    为日终接口，盘中取不到当日值。当 northbound.date != 今天时加 is_stale/note，
+    让前端与 AI 显式提示用户展示的是前一交易日数据。
+    """
+    if not isinstance(northbound, dict):
+        return
+    today = datetime.now().strftime("%Y%m%d")
+    nb_date = str(northbound.get("date", "")).replace("-", "")
+    northbound["is_stale"] = nb_date != today
+    if northbound["is_stale"]:
+        northbound["note"] = "盘中无北向资金实时数据，展示前一交易日日终数据"
+
 async def market_overview(args: dict) -> str:
     """获取大盘概览（6 路数据并行拉取，单路失败不影响其它字段）。"""
     provider = get_provider()
@@ -97,12 +113,11 @@ async def market_overview(args: dict) -> str:
         result["sector_top_down"] = down
     else:
         result["sector_error"] = str(e4)
-
     if e5 is None:
+        _mark_northbound_stale(northbound)
         result["northbound"] = northbound
     else:
         result["northbound_error"] = str(e5)
-
     if e6 is None:
         g, l = _build_movers(movers[0], movers[1])
         result["top_gainers"] = g

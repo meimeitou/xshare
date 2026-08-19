@@ -51,7 +51,7 @@ cd frontend && npm run dev                 # 启动前端（localhost:3000，需
 - **DuckDB 线程安全**：始终通过 `db.get_conn()` 获取连接（带 `_LockedConn` 代理），禁止直接 `duckdb.connect()`
 - **同步任务**：`sync_job` 的 `action="run"` 同步执行；`action="enqueue"` 写入任务队列，需要 MCP Server worker 运行才会处理
 - **环境变量**：`TUSHARE_TOKEN`（必须）、`WEB_SEARCH_PROVIDER`/`WEB_SEARCH_API_KEY`（可选）
-- **数据源时序**：Tushare 日线通常在交易日 15:00-16:00 入库；`daily` 同步应在 15:30 之后执行，推荐 17:00 后
+- **数据源时序**：Tushare 日线通常在交易日 15:00-16:00 入库；`daily` 同步应在 15:30 之后执行，推荐 16:00 后
 - **同日实时策略**：盘中同日实时行情只允许 AkShare（iTick 后续阶段接入）
 
 ## 常见陷阱

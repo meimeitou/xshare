@@ -206,7 +206,7 @@ TOOLS: dict[str, tuple] = {
             "days": {"type": "integer", "description": "（enqueue daily/index_daily/fund_daily）同步最近 N 个交易日"},
             "pages": {"type": "integer", "description": "（enqueue news）抓取页数"},
             "retain_days": {"type": "integer", "description": "（enqueue news / cleanup）保留天数"},
-            "backfill": {"type": "boolean", "description": "（enqueue daily/index_daily/fund_daily）历史补数，忽略 17:00 窗口"},
+            "backfill": {"type": "boolean", "description": "（enqueue daily/index_daily/fund_daily）历史补数，忽略 16:00 窗口"},
             "task_id": {"type": "integer", "description": "（cancel）任务 ID"},
             "retain_count": {"type": "integer", "description": "（cleanup）每类最少保留条数", "default": 500},
             "lookback_trading_days": {"type": "integer", "description": "（coverage）目标交易日数"},

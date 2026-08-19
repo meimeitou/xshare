@@ -26,6 +26,8 @@ async def test_market_overview_basic(monkeypatch, fake_provider):
     assert data["sector_top_up"][0]["name"] == "AI算力"
 
     assert data["northbound"]["total"] == 25.6
+    assert data["northbound"]["is_stale"] is True
+    assert "note" in data["northbound"]
 
     assert len(data["top_gainers"]) == 2
     assert data["top_gainers"][0]["code"] == "002594.SZ"

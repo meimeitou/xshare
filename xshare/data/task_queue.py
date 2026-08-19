@@ -53,7 +53,6 @@ from xshare.data.sync_config import (
     QUOTE_JOB,
     SECTOR_MONEYFLOW_JOB,
     STOCK_JOB,
-    TOP_LIST_JOB,
     TRADE_CAL_JOB,
     _BLOCKING_HANDLERS,
     _set_state,
@@ -557,8 +556,7 @@ def enqueue_initial_jobs() -> list[int]:
             ETF_BASIC_JOB, FUND_DAILY_JOB,
             TRADE_CAL_JOB, DAILY_BASIC_JOB, FINANCE_JOB, FUND_NAV_JOB,
             MONEYFLOW_JOB, SECTOR_MONEYFLOW_JOB, MARKET_MONEYFLOW_JOB,
-            LIMIT_LIST_JOB, TOP_LIST_JOB, CONCEPT_BOARD_JOB, CONCEPT_MEMBER_JOB,
-            MAINLINE_JOB,
+            LIMIT_LIST_JOB, CONCEPT_BOARD_JOB, CONCEPT_MEMBER_JOB,
         ):
             continue
         if not cfg["enabled"]:

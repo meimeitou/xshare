@@ -95,6 +95,7 @@ async def test_market_mainline_basic(monkeypatch):
 
     assert "error" not in data
     assert data["market_phase"]
+    assert data["market_snapshot"]["northbound"]["is_stale"] is True
     assert data["mainline_direction"]
 
     assert len(data["mainline_sectors"]) == 3

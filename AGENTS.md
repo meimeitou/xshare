@@ -58,7 +58,7 @@ Web UI 其他页 → FastAPI (xshare/web_server.py) → xshare/tools/
 | 当天实时行情 / 大盘快照 | quote_snapshot 缓存（quote 任务，新浪，交易时段 5 分钟） | 缓存优先；miss 回退 AkShare 新浪实时；个股再回退 `stock_daily` |
 | 北向资金 | Tushare `moneyflow_hsgt` | 日终数据（沪股通/深股通净流入），需 `TUSHARE_TOKEN`；东财接口已停用 |
 | 东财接口（`*_em` 等） | 禁用 | 易封禁；akshare 历史/净值走 Tushare failover |
-| 日线同步 | Tushare | 仅交易日 17:00 后执行；水位补洞 |
+| 日线同步 | Tushare | 仅交易日 16:00 后执行；水位补洞 |
 | 历史数据读取 | DuckDB | local-first，默认不打外部 API |
 | 新闻 | 同花顺 7×24 → DuckDB | 默认保留 1 天 |
 | 图片/文档解析 | MinerU (doc_parse) | 通过 `mineru-kie-sdk` |
@@ -106,7 +106,7 @@ make logs                    # 查看日志
 - **金融数据来源**：必须使用 MCP 工具。禁止用 `web_search`/`web_fetch` 获取行情、指数、财务数据
 - **`web_fetch` 限制**：仅当用户消息中已明确包含完整 URL 时才调用。禁止自行构造/推断 URL
 - **新闻**：个股新闻用 `stock_news`（本地 DB），实时资讯搜索用 `web_search`（nanobot 内置）
-- **数据源时序**：Tushare 日线交易日 15:00-16:00 入库，同步应在 17:00 后
+- **数据源时序**：Tushare 日线交易日 15:00-16:00 入库，同步应在 16:00 后
 - **DuckDB 连接**：始终通过 `xshare.data.db.get_conn()` 获取（per-call 连接，用完即弃）。禁止直接 `duckdb.connect()`
 - **SQLite OLTP**：`sync_config` / `sync_task_queue` / `portfolio` 在 `xshare.data.sqlite_db`。共享连接经 RLock 串行化；多语句事务用 `sqlite_critical()`。时间戳统一 UTC
 - **Provider 超时**：所有上游调用经 `ThreadPoolExecutor(32).submit().result(timeout=30)` 隔离，不阻塞事件循环
@@ -131,7 +131,7 @@ make logs                    # 查看日志
 | `XSHARE_NEWS_SYNC_INTERVAL` | 可选 | 新闻同步间隔分钟（默认 15） |
 | `XSHARE_QUOTE_SYNC_INTERVAL` | 可选 | 行情快照同步间隔分钟（默认 5，仅交易时段入队） |
 | `XSHARE_QUOTE_RETAIN_DAYS` | 可选 | 行情快照保留天数（默认 5） |
-| `XSHARE_DAILY_SYNC_INTERVAL` | 可选 | 日线展示兜底间隔（日历任务实际按 17:00 触发） |
+| `XSHARE_DAILY_SYNC_INTERVAL` | 可选 | 日线展示兜底间隔（日历任务实际按 16:00 触发） |
 | `XSHARE_TUSHARE_MIN_INTERVAL` | 可选 | Tushare 全局限速最小间隔秒（默认 0.25，约 240/min，低于 500/min 上限） |
 | `XSHARE_TUSHARE_RATE_RETRIES` | 可选 | 频率超限时重试次数（默认 5） |
 | `XSHARE_TUSHARE_RATE_COOLDOWN` | 可选 | 频率超限冷却秒数（默认 65） |
@@ -187,7 +187,7 @@ make logs                    # 查看日志
 
 ## 同步系统
 
-1. **sync_config** — SQLite 配置；日历任务（daily/index_daily/fund_daily/daily_basic/fund_nav）交易日 17:00 触发；其余 interval
+1. **sync_config** — SQLite 配置；日历任务（daily/index_daily/fund_daily/daily_basic/fund_nav）交易日 16:00 触发；其余 interval
 2. **task_queue** — 异步队列 + 退避重试 + lease 僵尸回收
 3. **watermark / rate_limit** — DuckDB 水位 + 按源全局限速
 4. **sync_job** — MCP：`status`/`watermarks`/`config`/`enqueue`/`history`/`coverage`/`cancel`/`cleanup`

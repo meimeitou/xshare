@@ -3,21 +3,21 @@ from datetime import datetime
 from xshare.data import sync_config
 
 
-def test_daily_window_open_when_trade_day_after_1700(monkeypatch):
+def test_daily_window_open_when_trade_day_after_1600(monkeypatch):
     monkeypatch.setattr(sync_config, "_is_trade_day", lambda d: True)
-    now = datetime(2026, 7, 20, 17, 0, 0)
+    now = datetime(2026, 7, 20, 16, 0, 0)
     assert sync_config._daily_sync_window_open(now) is True
 
 
-def test_daily_window_closed_before_1700_even_trade_day(monkeypatch):
+def test_daily_window_closed_before_1600_even_trade_day(monkeypatch):
     monkeypatch.setattr(sync_config, "_is_trade_day", lambda d: True)
-    now = datetime(2026, 7, 20, 16, 59, 59)
+    now = datetime(2026, 7, 20, 15, 59, 59)
     assert sync_config._daily_sync_window_open(now) is False
 
 
-def test_daily_window_closed_on_non_trade_day_even_after_1700(monkeypatch):
+def test_daily_window_closed_on_non_trade_day_even_after_1600(monkeypatch):
     monkeypatch.setattr(sync_config, "_is_trade_day", lambda d: False)
-    now = datetime(2026, 7, 20, 17, 0, 0)
+    now = datetime(2026, 7, 20, 16, 0, 0)
     assert sync_config._daily_sync_window_open(now) is False
 
 
@@ -38,7 +38,7 @@ def test_estimate_next_run_at_daily_outside_window(monkeypatch):
     monkeypatch.setattr(sync_config, "_is_trade_day", lambda d: d.weekday() < 5)
     now = datetime(2026, 7, 20, 10, 0, 0)  # Monday
     cfg = {"enabled": True, "interval_minutes": 240}
-    assert sync_config.estimate_next_run_at("daily", cfg, now) == "2026-07-20 17:00:00"
+    assert sync_config.estimate_next_run_at("daily", cfg, now) == "2026-07-20 16:00:00"
 
 
 def test_get_all_includes_next_run_at_and_new_jobs(db_conn):
@@ -59,14 +59,13 @@ def test_get_all_includes_next_run_at_and_new_jobs(db_conn):
         if j["enabled"]:
             assert j["next_run_at"] is not None
         if j["job"] in sync_config.CALENDAR_JOBS:
-            assert j["schedule"] == "calendar_1700"
+            assert j["schedule"] == "calendar_1600"
 
 
 def test_mainline_deps_ready_all_tables_aligned(db_conn):
     """所有依赖表都达到 stock_daily 最新交易日 → ready=True。"""
     db_conn.execute("INSERT INTO stock_daily (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
     db_conn.execute("INSERT INTO concept_board (trade_date, code) VALUES ('2026-08-17', 'BK0001')")
-    db_conn.execute("INSERT INTO limit_list (trade_date, code, limit_type) VALUES ('2026-08-17', '000001.SZ', 'U')")
     db_conn.execute("INSERT INTO sector_moneyflow (trade_date, content_type, code) VALUES ('2026-08-17', '概念', 'BK0001')")
     db_conn.execute("INSERT INTO stock_moneyflow (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
     db_conn.execute("INSERT INTO concept_member (trade_date, code, concept_code) VALUES ('2026-08-17', '000001.SZ', 'BK0001')")
@@ -79,7 +78,6 @@ def test_mainline_deps_ready_missing_table(db_conn):
     """某依赖表落后 → ready=False, info=表名。"""
     db_conn.execute("INSERT INTO stock_daily (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
     db_conn.execute("INSERT INTO concept_board (trade_date, code) VALUES ('2026-08-17', 'BK0001')")
-    db_conn.execute("INSERT INTO limit_list (trade_date, code, limit_type) VALUES ('2026-08-17', '000001.SZ', 'U')")
     db_conn.execute("INSERT INTO sector_moneyflow (trade_date, content_type, code) VALUES ('2026-08-17', '概念', 'BK0001')")
     db_conn.execute("INSERT INTO stock_moneyflow (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
     # concept_member 缺失
@@ -92,10 +90,64 @@ def test_mainline_deps_ready_stale_table(db_conn):
     """某依赖表日期落后 → ready=False。"""
     db_conn.execute("INSERT INTO stock_daily (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
     db_conn.execute("INSERT INTO concept_board (trade_date, code) VALUES ('2026-08-17', 'BK0001')")
-    db_conn.execute("INSERT INTO limit_list (trade_date, code, limit_type) VALUES ('2026-08-17', '000001.SZ', 'U')")
     db_conn.execute("INSERT INTO sector_moneyflow (trade_date, content_type, code) VALUES ('2026-08-17', '概念', 'BK0001')")
     db_conn.execute("INSERT INTO stock_moneyflow (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
     db_conn.execute("INSERT INTO concept_member (trade_date, code, concept_code) VALUES ('2026-08-12', '000001.SZ', 'BK0001')")
     ready, info = sync_config._mainline_deps_ready()
     assert ready is False
     assert info == "concept_member"
+
+
+def test_try_enqueue_mainline_skips_when_deps_not_ready(db_conn):
+    """依赖未就绪时 _try_enqueue_mainline_if_ready 不入队。"""
+    db_conn.execute("INSERT INTO stock_daily (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
+    # concept_board 缺失：依赖未就绪
+    called = []
+    sync_config._try_enqueue_mainline_if_ready()
+    assert called == []
+
+
+def test_try_enqueue_mainline_enqueues_when_deps_ready(db_conn, monkeypatch):
+    """依赖全部就绪时 _try_enqueue_mainline_if_ready 入队 mainline（priority=3）。"""
+    db_conn.execute("INSERT INTO stock_daily (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
+    db_conn.execute("INSERT INTO concept_board (trade_date, code) VALUES ('2026-08-17', 'BK0001')")
+    db_conn.execute("INSERT INTO sector_moneyflow (trade_date, content_type, code) VALUES ('2026-08-17', '概念', 'BK0001')")
+    db_conn.execute("INSERT INTO stock_moneyflow (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
+    db_conn.execute("INSERT INTO concept_member (trade_date, code, concept_code) VALUES ('2026-08-17', '000001.SZ', 'BK0001')")
+
+    # mainline 需在 sync_config 表中存在且 enabled
+    sync_config.init_sync_config()
+    from xshare.data import task_queue
+    enqueued = []
+    monkeypatch.setattr(task_queue, "enqueue", lambda *a, **k: enqueued.append((a, k)) or 42)
+
+    sync_config._try_enqueue_mainline_if_ready()
+    assert len(enqueued) == 1
+    args, kwargs = enqueued[0]
+    assert args[0] == sync_config.MAINLINE_JOB
+    assert kwargs.get("priority") == 3
+
+
+def test_mainline_exempt_from_calendar_window():
+    """mainline 不受 16:00 窗口限制：任何时刻都 eligible。"""
+    # 非交易日、窗口外、backfill=False
+    now = datetime(2026, 7, 19, 9, 0, 0)  # 周日早 9 点
+    eligible, reason = sync_config.check_calendar_window(sync_config.MAINLINE_JOB, now=now)
+    assert eligible is True
+    assert reason == ""
+
+
+def test_estimate_next_run_at_mainline_not_yet_run():
+    """mainline 未跑过 → 30s 后重试。"""
+    now = datetime(2026, 7, 20, 9, 0, 0)
+    cfg = {"enabled": True, "interval_minutes": 1440, "last_run_at": None, "last_status": None}
+    result = sync_config.estimate_next_run_at(sync_config.MAINLINE_JOB, cfg, now)
+    assert result == "2026-07-20 09:00:30"
+
+
+def test_estimate_next_run_at_mainline_done_today():
+    """mainline 今日已成功 → None（不再预估）。"""
+    now = datetime(2026, 7, 20, 16, 30, 0)
+    cfg = {"enabled": True, "interval_minutes": 1440,
+           "last_run_at": "2026-07-20 16:10:00", "last_status": "ok"}
+    assert sync_config.estimate_next_run_at(sync_config.MAINLINE_JOB, cfg, now) is None

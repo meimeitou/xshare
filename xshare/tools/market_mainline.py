@@ -17,6 +17,22 @@ from xshare.utils import safe_call, to_json_safe
 _mainline_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="mkt-mainline")
 
 
+def _mark_northbound_stale(northbound: dict) -> None:
+    """标记北向资金是否为非当日数据（盘中无实时来源，回退昨日）。
+
+    2024-08-19 起东财停止披露北向资金盘中实时数据，Tushare moneyflow_hsgt
+    为日终接口，盘中取不到当日值。当 northbound.date != 今天时加 is_stale/note，
+    让前端与 AI 显式提示用户展示的是前一交易日数据。
+    """
+    if not isinstance(northbound, dict):
+        return
+    today = datetime.now().strftime("%Y%m%d")
+    nb_date = str(northbound.get("date", "")).replace("-", "")
+    northbound["is_stale"] = nb_date != today
+    if northbound["is_stale"]:
+        northbound["note"] = "盘中无北向资金实时数据，展示前一交易日日终数据"
+
+
 def _calc_market_phase(indices: dict, market_stats: dict, northbound: dict) -> str:
     """根据指数、涨跌家数、北向资金判断市场阶段"""
     changes = []
@@ -147,7 +163,7 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
     三维度：
     - 逻辑面：concept_board 热度/涨停数排序
     - 资金面：sector_moneyflow 主力净流入 + market_moneyflow 大盘资金
-    - 情绪面：limit_list 涨停梯队 + top_list 龙虎榜
+    - 情绪面：limit_list 涨停梯队（本地计算）
     """
     conn = get_conn()
     data_warnings: list[str] = []
@@ -422,11 +438,6 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
                        COALESCE(buy_sm_amount, 0)  - COALESCE(sell_sm_amount, 0)  AS sm_net_amount
                 FROM stock_moneyflow
                 WHERE trade_date = ?
-            ),
-            tl AS (
-                SELECT code, net_amount
-                FROM top_list
-                WHERE trade_date = ?
             )
             SELECT
                 c.code,
@@ -439,16 +450,14 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
                 COALESCE(mf.lg_net_amount, 0)  AS lg_net_amount,
                 COALESCE(mf.md_net_amount, 0)  AS md_net_amount,
                 COALESCE(mf.sm_net_amount, 0)  AS sm_net_amount,
-                COALESCE(tl.net_amount, 0)    AS top_list_net
+                0.0                           AS top_list_net
             FROM candidates c
             LEFT JOIN mainline_members mm ON mm.code = c.code
             LEFT JOIN limit_up lu ON lu.code = c.code
             LEFT JOIN sd_pct ON sd_pct.code = c.code
             LEFT JOIN mf ON mf.code = c.code
-            LEFT JOIN tl ON tl.code = c.code
             WHERE COALESCE(lu.limit_times, 0) >= 2
                OR COALESCE(mf.net_mf_amount, 0) > 0
-               OR COALESCE(tl.net_amount, 0) > 0
             """,
             [
                 member_latest, *mainline_codes,
@@ -457,7 +466,6 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
                 member_latest, *mainline_codes,
                 analysis_date,
                 stock_daily_latest, stock_daily_latest,
-                analysis_date,
                 analysis_date,
             ],
         ).fetchall()
@@ -714,6 +722,7 @@ async def market_mainline(args: dict) -> str:
 
         result["market_phase"] = _calc_market_phase(indices, market_stats, northbound)
         result["data_date"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        _mark_northbound_stale(northbound)
         result["market_snapshot"] = {
             "indices": indices,
             "market_stats": market_stats,

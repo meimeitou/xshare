@@ -462,7 +462,13 @@ class ProviderManager:
         raise DataFetchError("无法获取股票列表")
 
     def get_financial_data(self, code: str, force_refresh: bool = False) -> pd.DataFrame:
-        """财务数据 — 本地优先。"""
+        """财务数据 — 本地优先。
+
+        PE/PB 是日频指标，存在 ``stock_daily_basic`` 表（Tushare daily_basic
+        同步）；``stock_finance`` 的 pe/pb 列因 fina_indicator 不返回而恒为
+        NULL。此处从 stock_daily_basic 取最新交易日的 pe/pb 补进最新一期，
+        使前端/AI 拿到非空 PE/PB。ROE/营收增速仍来自 stock_finance。
+        """
         conn = get_conn()
         df = conn.execute(
             "SELECT * FROM stock_finance WHERE code = ? ORDER BY end_date DESC",
@@ -482,6 +488,7 @@ class ProviderManager:
                     self._upsert_finance(conn, fresh)
                     fresh.attrs["source"] = "api"
                     fresh.attrs["is_stale"] = False
+                    self._backfill_pe_pb(conn, fresh)
                     return fresh
             except DataFetchError:
                 if df.empty:
@@ -492,9 +499,37 @@ class ProviderManager:
                 f"本地无 {code} 财务数据，请先在 /sync 页面执行财务同步（或 force_refresh=True）"
             )
 
+        self._backfill_pe_pb(conn, df)
         df.attrs["source"] = "cache"
         df.attrs["is_stale"] = is_stale
         return df
+
+    @staticmethod
+    def _backfill_pe_pb(conn, df: pd.DataFrame) -> None:
+        """从 stock_daily_basic 取每只股票最新交易日的 pe/pb，就地填进 df 最新一期行。
+
+        df 按 end_date DESC 排序（最新期在 iloc[0]）。daily_basic 的 pe/pb 是
+        日频、按交易日存在，取该 code 最近一个交易日的一行即可。
+        """
+        if df.empty or "code" not in df.columns:
+            return
+        code = str(df.iloc[0]["code"])
+        try:
+            row = conn.execute(
+                "SELECT pe, pb FROM stock_daily_basic "
+                "WHERE code = ? ORDER BY trade_date DESC LIMIT 1",
+                [code],
+            ).fetchone()
+        except Exception as exc:
+            logger.debug("daily_basic pe/pb 回填失败 %s: %s", code, exc)
+            return
+        if not row:
+            return
+        pe_val, pb_val = row
+        if pe_val is not None and "pe" in df.columns and pd.isna(df.iloc[0].get("pe")):
+            df.iloc[0, df.columns.get_loc("pe")] = float(pe_val)
+        if pb_val is not None and "pb" in df.columns and pd.isna(df.iloc[0].get("pb")):
+            df.iloc[0, df.columns.get_loc("pb")] = float(pb_val)
 
     def get_daily_basic(self, code: str, trade_date: str = "", force_refresh: bool = False) -> pd.DataFrame:
         """每日基础指标 — 优先读 stock_daily_basic。"""

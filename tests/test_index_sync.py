@@ -15,7 +15,7 @@ def test_sync_config_includes_index_jobs(db_conn):
     assert "index_basic" in jobs
     assert "index_daily" in jobs
     assert jobs["index_basic"]["schedule"] == "interval"
-    assert jobs["index_daily"]["schedule"] == "calendar_1700"
+    assert jobs["index_daily"]["schedule"] == "calendar_1600"
     assert "index_daily" in sync_config.CALENDAR_JOBS
 
 

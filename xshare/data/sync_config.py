@@ -35,7 +35,6 @@ MONEYFLOW_JOB = "moneyflow"
 SECTOR_MONEYFLOW_JOB = "sector_moneyflow"
 MARKET_MONEYFLOW_JOB = "market_moneyflow"
 LIMIT_LIST_JOB = "limit_list"
-TOP_LIST_JOB = "top_list"
 CONCEPT_BOARD_JOB = "concept_board"
 CONCEPT_MEMBER_JOB = "concept_member"
 MAINLINE_JOB = "mainline"
@@ -56,28 +55,27 @@ ALL_JOBS = (
     SECTOR_MONEYFLOW_JOB,
     MARKET_MONEYFLOW_JOB,
     LIMIT_LIST_JOB,
-    TOP_LIST_JOB,
     CONCEPT_BOARD_JOB,
     CONCEPT_MEMBER_JOB,
     QUOTE_JOB,
     MAINLINE_JOB,
 )
 
-# 日历触发（非 interval）的任务：交易日 17:00 各入队一次
+# 日历触发（非 interval）的任务：交易日 16:00 各入队一次
 CALENDAR_JOBS = frozenset({
     DAILY_JOB, INDEX_DAILY_JOB, FUND_DAILY_JOB, DAILY_BASIC_JOB, FUND_NAV_JOB,
     MONEYFLOW_JOB, SECTOR_MONEYFLOW_JOB, MARKET_MONEYFLOW_JOB,
-    LIMIT_LIST_JOB, TOP_LIST_JOB, CONCEPT_BOARD_JOB, CONCEPT_MEMBER_JOB,
-    MAINLINE_JOB,
+    LIMIT_LIST_JOB, CONCEPT_BOARD_JOB, CONCEPT_MEMBER_JOB,
 })
 
 # 仅交易时段运行的 interval 任务：非交易时段 interval loop 不入队
 TRADING_HOURS_JOBS = frozenset({QUOTE_JOB})
 
-# 日历任务的触发时刻（本地时间，交易日 17:00）。
-# Tushare 日线通常 15:00-16:00 入库，17:00 触发留出缓冲，确保收盘数据齐全。
-_CALENDAR_TRIGGER_HOUR = 17
+# 日历任务的触发时刻（本地时间，交易日 16:00）。
+# Tushare 日线通常 15:00-16:00 入库，16:00 触发即可拉取当日收盘数据。
+_CALENDAR_TRIGGER_HOUR = 16
 _CALENDAR_TRIGGER_MINUTE = 0
+
 
 JOB_META: dict[str, dict] = {
     NEWS_JOB: {
@@ -95,11 +93,11 @@ JOB_META: dict[str, dict] = {
     },
     DAILY_JOB: {
         "label": "日线行情",
-        "description": "全市场日线 OHLCV；交易日 17:00 触发；补数可绕过窗口",
+        "description": "全市场日线 OHLCV；交易日 16:00 触发；补数可绕过窗口",
         "params_schema": {
             "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
             "years": {"type": "integer", "description": "一次性同步最近 N 年历史数据"},
-            "backfill": {"type": "boolean", "default": False, "description": "历史补数，忽略 17:00 窗口"},
+            "backfill": {"type": "boolean", "default": False, "description": "历史补数，忽略 16:00 窗口"},
         },
     },
     INDEX_BASIC_JOB: {
@@ -111,11 +109,11 @@ JOB_META: dict[str, dict] = {
     },
     INDEX_DAILY_JOB: {
         "label": "指数日线",
-        "description": "按 index_basic 拉取指数日线；交易日 17:00 触发；补数可绕过窗口",
+        "description": "按 index_basic 拉取指数日线；交易日 16:00 触发；补数可绕过窗口",
         "params_schema": {
             "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
             "years": {"type": "integer", "description": "一次性同步最近 N 年历史数据"},
-            "backfill": {"type": "boolean", "default": False, "description": "历史补数，忽略 17:00 窗口"},
+            "backfill": {"type": "boolean", "default": False, "description": "历史补数，忽略 16:00 窗口"},
         },
     },
     ETF_BASIC_JOB: {
@@ -127,11 +125,11 @@ JOB_META: dict[str, dict] = {
     },
     FUND_DAILY_JOB: {
         "label": "ETF 日线",
-        "description": "Tushare fund_daily 写入 fund_daily；交易日 17:00 触发；补数可绕过窗口",
+        "description": "Tushare fund_daily 写入 fund_daily；交易日 16:00 触发；补数可绕过窗口",
         "params_schema": {
             "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
             "years": {"type": "integer", "description": "一次性同步最近 N 年历史数据"},
-            "backfill": {"type": "boolean", "default": False, "description": "历史补数，忽略 17:00 窗口"},
+            "backfill": {"type": "boolean", "default": False, "description": "历史补数，忽略 16:00 窗口"},
         },
     },
     TRADE_CAL_JOB: {
@@ -143,10 +141,10 @@ JOB_META: dict[str, dict] = {
     },
     DAILY_BASIC_JOB: {
         "label": "每日指标",
-        "description": "全市场 PE/PB 等写入 stock_daily_basic；交易日 17:00 触发",
+        "description": "全市场 PE/PB 等写入 stock_daily_basic；交易日 16:00 触发",
         "params_schema": {
             "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
-            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 16:00 窗口"},
         },
     },
     FINANCE_JOB: {
@@ -159,7 +157,7 @@ JOB_META: dict[str, dict] = {
     },
     FUND_NAV_JOB: {
         "label": "基金净值",
-        "description": "同步 fund_basic/持仓相关基金净值；交易日 17:00 触发",
+        "description": "同步 fund_basic/持仓相关基金净值；交易日 16:00 触发",
         "params_schema": {
             "limit": {"type": "integer", "default": 50, "description": "本次最多同步基金数"},
         },
@@ -171,10 +169,10 @@ JOB_META: dict[str, dict] = {
     },
     MONEYFLOW_JOB: {
         "label": "个股资金流向",
-        "description": "Tushare moneyflow 写入 stock_moneyflow；交易日 17:00 触发",
+        "description": "Tushare moneyflow 写入 stock_moneyflow；交易日 16:00 触发",
         "params_schema": {
             "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
-            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 16:00 窗口"},
             "start_date": {"type": "string", "description": "区间补全起始 YYYY-MM-DD"},
             "end_date": {"type": "string", "description": "区间补全结束 YYYY-MM-DD"},
             "overwrite": {"type": "boolean", "default": False, "description": "强制重拉覆盖已有数据"},
@@ -182,56 +180,48 @@ JOB_META: dict[str, dict] = {
     },
     SECTOR_MONEYFLOW_JOB: {
         "label": "板块资金流向",
-        "description": "Tushare moneyflow_ind_dc 写入 sector_moneyflow（行业/概念/地域）；交易日 17:00 触发",
+        "description": "Tushare moneyflow_ind_dc 写入 sector_moneyflow（行业/概念/地域）；交易日 16:00 触发",
         "params_schema": {
             "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
-            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 16:00 窗口"},
         },
     },
     MARKET_MONEYFLOW_JOB: {
         "label": "大盘资金流向",
-        "description": "Tushare moneyflow_mkt_dc 写入 market_moneyflow；交易日 17:00 触发",
+        "description": "Tushare moneyflow_mkt_dc 写入 market_moneyflow；交易日 16:00 触发",
         "params_schema": {
             "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
-            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 16:00 窗口"},
         },
     },
     LIMIT_LIST_JOB: {
         "label": "涨跌停列表",
-        "description": "Tushare limit_list_d 写入 limit_list（含连板数/炸板）；交易日 17:00 触发",
+        "description": "从 stock_daily + stock_basic 本地计算涨停股及连板数，写入 limit_list（仅 U 类型）；交易日 16:00 触发",
         "params_schema": {
             "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
-            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
-        },
-    },
-    TOP_LIST_JOB: {
-        "label": "龙虎榜",
-        "description": "Tushare top_list 写入 top_list；交易日 17:00 触发",
-        "params_schema": {
-            "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
-            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 16:00 窗口"},
         },
     },
     CONCEPT_BOARD_JOB: {
         "label": "概念题材板块",
-        "description": "Tushare dc_concept 写入 concept_board（东财概念板块，数据从 2026-02-03 起）；交易日 17:00 触发",
+        "description": "Tushare dc_concept 写入 concept_board（东财概念板块，数据从 2026-02-03 起）；交易日 16:00 触发",
         "params_schema": {
             "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
-            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 16:00 窗口"},
         },
     },
     CONCEPT_MEMBER_JOB: {
         "label": "概念题材成分",
-        "description": "Tushare dc_concept_cons 写入 concept_member（主线 TOP 概念成分，数据从 2026-02-03 起）；交易日 17:00 触发",
+        "description": "Tushare dc_concept_cons 写入 concept_member（主线 TOP 概念成分，数据从 2026-02-03 起）；交易日 16:00 触发",
         "params_schema": {
             "days": {"type": "integer", "default": 1, "description": "回溯交易日数"},
-            "backfill": {"type": "boolean", "default": False, "description": "忽略 17:00 窗口"},
+            "backfill": {"type": "boolean", "default": False, "description": "忽略 16:00 窗口"},
             "top_n": {"type": "integer", "default": 24, "description": "同步 TOP 概念数（约 sector_top_n*3）"},
         },
     },
     MAINLINE_JOB: {
         "label": "主线方向计算",
-        "description": "三维度共振主线分析结果写入 mainline_cache；交易日 17:00 后触发，缓存落后于 concept_board 时自动重算",
+        "description": "三维度共振主线分析结果写入 mainline_cache；依赖 concept_board/stock_moneyflow/sector_moneyflow/concept_member 全部就绪后自动入队（limit_list 由 stock_daily 本地计算），不与数据同步并行，不受 16:00 窗口限制",
         "params_schema": {
             "sector_top_n": {"type": "integer", "default": 8, "description": "主线板块数量"},
             "strong_limit": {"type": "integer", "default": 10, "description": "强势股数量"},
@@ -303,7 +293,7 @@ def _is_trade_day(day: date) -> bool:
 
 
 def _daily_sync_window_open(now: datetime | None = None) -> bool:
-    """A 股日线/日频同步窗口：交易日 17:00 之后。"""
+    """A 股日线/日频同步窗口：交易日 16:00 之后。"""
     current = now or datetime.now()
     if not _is_trade_day(current.date()):
         return False
@@ -328,19 +318,19 @@ def check_calendar_window(
 ) -> tuple[bool, str]:
     """检查日历任务是否在可执行窗口内。
 
-    非日历任务或 backfill 总是返回 ``(True, "")``。
+    非日历任务、mainline（依赖就绪触发）、backfill 总是返回 ``(True, "")``。
     供 ``run_job``（执行前）和 ``sync_loop``（入队前）共用，消除窗口判断重复。
 
     Returns:
         (eligible, reason) — eligible 为 False 时 reason 说明原因。
     """
-    if job not in CALENDAR_JOBS:
+    if job not in CALENDAR_JOBS or job == MAINLINE_JOB:
         return True, ""
     if (payload or {}).get("backfill"):
         return True, ""
     current = now or datetime.now()
     if not _daily_sync_window_open(current):
-        return False, f"{job} 同步仅在交易日 17:00 后执行"
+        return False, f"{job} 同步仅在交易日 16:00 后执行"
     return True, ""
 
 
@@ -354,7 +344,7 @@ def _parse_local_ts(value: str | None) -> datetime | None:
 
 
 def _next_daily_window_open(now: datetime | None = None) -> datetime:
-    """下一次日历同步窗口开启时刻（本地时间，交易日 17:00）。"""
+    """下一次日历同步窗口开启时刻（本地时间，交易日 16:00）。"""
     current = now or datetime.now()
     today = current.date()
     if _is_trade_day(today):
@@ -375,10 +365,18 @@ def estimate_next_run_at(job: str, cfg: dict, now: datetime | None = None) -> st
     if not cfg.get("enabled"):
         return None
 
+    if job == MAINLINE_JOB:
+        # mainline 依赖就绪触发，不受 16:00 窗口限制：每 30s 轮询就绪状态。
+        # 若今日已成功则不再预估；否则 30s 后重试。
+        last = _parse_local_ts(cfg.get("last_run_at"))
+        if last and last.date() == current.date() and cfg.get("last_status") == "ok":
+            return None
+        return (current + timedelta(seconds=_POLL_SECONDS)).strftime("%Y-%m-%d %H:%M:%S")
+
     if job in CALENDAR_JOBS:
         if not _daily_sync_window_open(current):
             return _next_daily_window_open(current).strftime("%Y-%m-%d %H:%M:%S")
-        # 窗口内：若今日已成功跑过，则指向下一交易日 17:00
+        # 窗口内：若今日已成功跑过，则指向下一交易日 16:00
         last = _parse_local_ts(cfg.get("last_run_at"))
         if last and last.date() == current.date() and cfg.get("last_status") == "ok":
             return _next_daily_window_open(current + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
@@ -423,7 +421,6 @@ def init_sync_config() -> None:
         (SECTOR_MONEYFLOW_JOB, _env_int("XSHARE_SECTOR_MONEYFLOW_SYNC_INTERVAL", 1440)),
         (MARKET_MONEYFLOW_JOB, _env_int("XSHARE_MARKET_MONEYFLOW_SYNC_INTERVAL", 1440)),
         (LIMIT_LIST_JOB, _env_int("XSHARE_LIMIT_LIST_SYNC_INTERVAL", 1440)),
-        (TOP_LIST_JOB, _env_int("XSHARE_TOP_LIST_SYNC_INTERVAL", 1440)),
         (CONCEPT_BOARD_JOB, _env_int("XSHARE_CONCEPT_BOARD_SYNC_INTERVAL", 1440)),
         (CONCEPT_MEMBER_JOB, _env_int("XSHARE_CONCEPT_MEMBER_SYNC_INTERVAL", 1440)),
         (QUOTE_JOB, _env_int("XSHARE_QUOTE_SYNC_INTERVAL", 5)),
@@ -454,7 +451,7 @@ def get_one(job: str) -> dict | None:
     job_dict["label"] = meta.get("label", job_dict["job"])
     job_dict["description"] = meta.get("description", "")
     job_dict["params_schema"] = meta.get("params_schema", {})
-    job_dict["schedule"] = "calendar_1700" if job_dict["job"] in CALENDAR_JOBS else "interval"
+    job_dict["schedule"] = "calendar_1600" if job_dict["job"] in CALENDAR_JOBS else "interval"
     job_dict["next_run_at"] = estimate_next_run_at(job_dict["job"], job_dict)
     return job_dict
 
@@ -472,7 +469,7 @@ def get_all() -> list[dict]:
         j["label"] = meta.get("label", j["job"])
         j["description"] = meta.get("description", "")
         j["params_schema"] = meta.get("params_schema", {})
-        j["schedule"] = "calendar_1700" if j["job"] in CALENDAR_JOBS else "interval"
+        j["schedule"] = "calendar_1600" if j["job"] in CALENDAR_JOBS else "interval"
         j["next_run_at"] = estimate_next_run_at(j["job"], j, now)
     return jobs
 
@@ -804,29 +801,134 @@ def _sync_market_moneyflow_blocking(payload: dict | None = None) -> int:
     return count
 
 
+def _compute_limit_list_local(days: int = 1) -> int:
+    """从 stock_daily + stock_basic 本地计算涨停列表，写入 limit_list。
+
+    涨停判定：pct_chg ≥ 板块阈值（主板 10%/ST 5%、创业板/科创板 20%、北交所 30%）。
+    连板数：gaps-and-islands 算法回溯连续涨停日。
+    仅生成 limit_type='U' 行——mainline 只读 U，D/Z 不计算。
+
+    ponytail: 回溯窗口固定 30 个自然日（约 22 交易日），足够算 5+ 连板；
+    超长连板（如 10 连板）会因窗口不足而低估，但 mainline 按 5连+ 聚合，影响可忽略。
+    """
+    from xshare.data.db import get_conn, init_tables
+
+    conn = get_conn()
+    init_tables(conn)
+
+    # 确定目标交易日：stock_daily 中最近 days 个交易日
+    target_dates = conn.execute(
+        "SELECT DISTINCT trade_date FROM stock_daily "
+        "ORDER BY trade_date DESC LIMIT ?",
+        [days],
+    ).fetchall()
+    if not target_dates:
+        return 0
+    target_set = {r[0] for r in target_dates}
+    earliest = min(target_set)
+    # 回溯窗口：目标日期前 30 自然日，覆盖连板计算
+    lookback = (earliest - timedelta(days=30)).isoformat()
+
+    # 一次性计算所有目标日期的涨停 + 连板数
+    rows = conn.execute(
+        """
+        WITH ranked AS (
+            SELECT sd.code, sd.trade_date, sd.close, sd.amount,
+                   LAG(sd.close) OVER (PARTITION BY sd.code ORDER BY sd.trade_date) AS prev_close,
+                   sb.name, sb.market
+            FROM stock_daily sd
+            JOIN stock_basic sb ON sb.code = sd.code
+            WHERE sd.trade_date >= ?
+        ),
+        pct AS (
+            SELECT code, trade_date, close, amount, name, market, prev_close,
+                   CASE WHEN prev_close IS NOT NULL AND prev_close != 0
+                        THEN ROUND((close - prev_close) / prev_close * 100, 2)
+                        ELSE NULL END AS pct_chg
+            FROM ranked
+        ),
+        is_limit AS (
+            SELECT code, trade_date, close, amount, name, market, pct_chg,
+                   CASE WHEN pct_chg IS NOT NULL AND (
+                       (market = '主板' AND (
+                           (name LIKE '%ST%' AND pct_chg >= 4.9) OR
+                           (name NOT LIKE '%ST%' AND pct_chg >= 9.9)
+                       )) OR
+                       (market IN ('创业板', '科创板') AND pct_chg >= 19.9) OR
+                       (market = '北交所' AND pct_chg >= 29.9)
+                   ) THEN 1 ELSE 0 END AS is_up
+            FROM pct
+        ),
+        streaks AS (
+            SELECT code, trade_date, name, market, close, amount, pct_chg, is_up,
+                   ROW_NUMBER() OVER (PARTITION BY code ORDER BY trade_date) AS rn,
+                   ROW_NUMBER() OVER (PARTITION BY code, is_up ORDER BY trade_date) AS rn2
+            FROM is_limit
+        ),
+        runs AS (
+            SELECT code, trade_date, name, market, close, amount, pct_chg, is_up, rn - rn2 AS grp
+            FROM streaks
+        ),
+        consec AS (
+            SELECT code, trade_date, name, market, close, amount, pct_chg, is_up,
+                   CASE WHEN is_up = 1
+                        THEN ROW_NUMBER() OVER (PARTITION BY code, grp ORDER BY trade_date)
+                        ELSE 0 END AS limit_times
+            FROM runs
+        )
+        SELECT code, trade_date, name, market, close, pct_chg, amount, limit_times
+        FROM consec
+        WHERE is_up = 1 AND trade_date IN ?
+        """,
+        [lookback, list(target_set)],
+    ).fetchall()
+
+    if not rows:
+        return 0
+
+    # 写入 limit_list（仅 U 类型，先删旧 U 行再插入）
+    from xshare.data import watermark as wm
+    fetched = 0
+    for d in sorted(target_set, reverse=True):
+        iso = d.isoformat() if hasattr(d, 'isoformat') else str(d)
+        day_rows = [r for r in rows if r[1] == d]
+        if not day_rows:
+            wm.set_watermark(wm.DATASET_LIMIT_LIST, d, wm.STATUS_OK, 0)
+            continue
+        conn.execute(
+            "DELETE FROM limit_list WHERE trade_date = ? AND limit_type = 'U'",
+            [d],
+        )
+        conn.executemany(
+            """
+            INSERT INTO limit_list
+                (trade_date, code, name, industry, close, pct_chg, amount,
+                 limit_amount, float_mv, turnover_ratio,
+                 first_time, last_time, open_times, up_stat, limit_times, limit_type)
+            VALUES (?, ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, 'U')
+            """,
+            [(d, r[0], r[2], r[4], r[5], r[6], r[7]) for r in day_rows],
+        )
+        fetched += len(day_rows)
+        wm.set_watermark(wm.DATASET_LIMIT_LIST, d, wm.STATUS_OK, len(day_rows))
+    return fetched
+
 def _sync_limit_list_blocking(payload: dict | None = None) -> int:
-    from xshare.data.sources.tushare_source import sync_limit_list_to_db
+    """从 stock_daily + stock_basic 本地计算涨跌停列表，写入 limit_list。
 
-    if not os.environ.get("TUSHARE_TOKEN"):
-        return 0
+    不依赖 Tushare limit_list_d 接口（该接口通常比 daily 延迟 1-2 小时）。
+    仅生成 limit_type='U'（涨停）行——mainline 只读 U 类型。
+    """
+    from xshare.data.db import get_conn
+
     p = payload or {}
     days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
-    count = sync_limit_list_to_db(days=days)
+    count = _compute_limit_list_local(days=days)
     _try_enqueue_mainline_if_ready()
-    logger.info("涨跌停列表已同步: %d 条", count)
+    logger.info("涨跌停列表已本地计算: %d 条", count)
     return count
 
 
-def _sync_top_list_blocking(payload: dict | None = None) -> int:
-    from xshare.data.sources.tushare_source import sync_top_list_to_db
-
-    if not os.environ.get("TUSHARE_TOKEN"):
-        return 0
-    p = payload or {}
-    days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
-    count = sync_top_list_to_db(days=days)
-    logger.info("龙虎榜已同步: %d 条", count)
-    return count
 
 
 def _sync_concept_board_blocking(payload: dict | None = None) -> int:
@@ -861,7 +963,6 @@ def _sync_concept_member_blocking(payload: dict | None = None) -> int:
 # stock_daily 作为基准日期参照（最先入库）。
 _MAINLINE_DEP_TABLES = (
     ("concept_board", None),
-    ("limit_list", None),
     ("sector_moneyflow", "概念"),
     ("stock_moneyflow", None),
     ("concept_member", None),
@@ -869,7 +970,7 @@ _MAINLINE_DEP_TABLES = (
 
 
 def _mainline_deps_ready() -> tuple[bool, str | None]:
-    """检查 mainline 5 张依赖表是否都已同步到 stock_daily 的最新交易日。
+    """检查 mainline 4 张依赖表是否都已同步到 stock_daily 的最新交易日。
 
     Returns:
         (ready, target_date) — ready=True 时 target_date 为 YYYY-MM-DD；
@@ -965,7 +1066,6 @@ _BLOCKING_HANDLERS = {
     SECTOR_MONEYFLOW_JOB: _sync_sector_moneyflow_blocking,
     MARKET_MONEYFLOW_JOB: _sync_market_moneyflow_blocking,
     LIMIT_LIST_JOB: _sync_limit_list_blocking,
-    TOP_LIST_JOB: _sync_top_list_blocking,
     CONCEPT_BOARD_JOB: _sync_concept_board_blocking,
     CONCEPT_MEMBER_JOB: _sync_concept_member_blocking,
     MAINLINE_JOB: _sync_mainline_blocking,
@@ -975,7 +1075,7 @@ _BLOCKING_HANDLERS = {
 # ─── 后台循环 ────────────────────────────────────────────────────────────────
 
 async def sync_loop(job: str) -> None:
-    """后台循环：interval 任务按间隔入队；日历任务在交易日 17:00 入队一次。"""
+    """后台循环：interval 任务按间隔入队；日历任务在交易日 16:00 入队一次。"""
     while True:
         cfg = get_one(job)
         if not cfg or not cfg["enabled"]:
@@ -1033,7 +1133,7 @@ async def _calendar_loop_iteration(job: str, cfg: dict) -> None:
 
     from xshare.data.task_queue import enqueue
 
-    # mainline 不走 17:00 盲目入队，由依赖就绪检查单独处理（见下方）
+    # mainline 不走 16:00 盲目入队，由依赖就绪检查单独处理（见下方）
     if not already_ok_today and job != MAINLINE_JOB:
         try:
             task_id = enqueue(job, trigger="schedule")
@@ -1041,7 +1141,7 @@ async def _calendar_loop_iteration(job: str, cfg: dict) -> None:
         except Exception as exc:
             logger.warning("日历任务 %s 入队失败: %s", job, exc)
 
-    # mainline：仅在依赖表全部就绪后入队（不再 17:00 盲目并行触发）。
+    # mainline：仅在依赖表全部就绪后入队（不再 16:00 盲目并行触发）。
     # 依赖表完成时会通过 _try_enqueue_mainline_if_ready 主动触发；
     # 这里作为兜底：每 30s 轮询一次就绪状态。
     if job == MAINLINE_JOB:

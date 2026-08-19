@@ -379,8 +379,8 @@ function JobsTable({
       {jobs.map((job) => {
         const busy = busyJob === job.job;
         const scheduleLabel =
-          job.schedule === "calendar_1700"
-            ? "交易日 17:00"
+          job.schedule === "calendar_1600"
+            ? "交易日 16:00"
           : `每 ${fmtInterval(job.interval_minutes)}`;
         return (
           <tr
