@@ -42,7 +42,6 @@ from xshare.data.sync_config import (
     ETF_BASIC_JOB,
     FINANCE_JOB,
     FUND_DAILY_JOB,
-    FUND_NAV_JOB,
     INDEX_BASIC_JOB,
     INDEX_DAILY_JOB,
     LIMIT_LIST_JOB,
@@ -432,7 +431,7 @@ async def run_job(job: str, payload: dict | None = None) -> dict:
             )
             return {"job": job, "status": "skipped", "reason": reason, "started_at": started}
 
-        needs_token = job not in (NEWS_JOB, QUOTE_JOB, MAINLINE_JOB)
+        needs_token = job not in (NEWS_JOB, QUOTE_JOB, MAINLINE_JOB, LIMIT_LIST_JOB)
         if needs_token and not os.environ.get("TUSHARE_TOKEN"):
             reason = "TUSHARE_TOKEN 未配置"
             _set_state(job, "skipped", reason)
@@ -444,6 +443,17 @@ async def run_job(job: str, payload: dict | None = None) -> dict:
 
         count = await asyncio.to_thread(handler, payload)
         elapsed = time.monotonic() - t0
+        if job in CALENDAR_JOBS and not count:
+            reason = "无数据"
+            _set_state(job, "skipped", reason)
+            logger.info(
+                "[sync] run_job 跳过 job=%s reason=%s elapsed=%.2fs",
+                job, reason, elapsed,
+            )
+            return {
+                "job": job, "status": "skipped", "reason": reason,
+                "synced": count, "started_at": started, "elapsed_s": round(elapsed, 2),
+            }
         _set_state(job, "ok")
         logger.info(
             "[sync] run_job 完成 job=%s status=ok synced=%s elapsed=%.2fs",
@@ -482,7 +492,7 @@ def enqueue_initial_jobs() -> list[int]:
     """启动时入队 system 任务。
 
     顺序：trade_cal -> stock/index/etf basic -> daily 类增量（窗口开放且库非空）
-    -> daily_basic -> moneyflow -> finance -> fund_nav -> news
+    -> daily_basic -> moneyflow -> finance -> news
 
     历史数据补全不再由启动自动触发：库空时日线类不入队，应由前端
     一次性补全接口（start_date/end_date + overwrite）显式触发。后续缺口
@@ -546,17 +556,16 @@ def enqueue_initial_jobs() -> list[int]:
             logger.warning("初次入队 %s 失败: %s", FUND_DAILY_JOB, exc)
 
     _try_enqueue(FINANCE_JOB, priority=7)
-    if check_calendar_window(FUND_NAV_JOB)[0]:
-        _try_enqueue(FUND_NAV_JOB, priority=8)
 
     for cfg in get_all():
         job = cfg["job"]
         if job in (
             STOCK_JOB, DAILY_JOB, INDEX_BASIC_JOB, INDEX_DAILY_JOB,
             ETF_BASIC_JOB, FUND_DAILY_JOB,
-            TRADE_CAL_JOB, DAILY_BASIC_JOB, FINANCE_JOB, FUND_NAV_JOB,
+            TRADE_CAL_JOB, DAILY_BASIC_JOB, FINANCE_JOB,
             MONEYFLOW_JOB, SECTOR_MONEYFLOW_JOB, MARKET_MONEYFLOW_JOB,
             LIMIT_LIST_JOB, CONCEPT_BOARD_JOB, CONCEPT_MEMBER_JOB,
+            MAINLINE_JOB,
         ):
             continue
         if not cfg["enabled"]:

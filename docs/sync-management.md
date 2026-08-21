@@ -4,7 +4,7 @@ XShare 通过 SQLite `sync_config` + `sync_task_queue` 管理同步任务；覆�
 
 ## 设计原则
 
-1. **历史数据本地优先**：日线 / 财务 / 基金净值 / 股票列表默认只读 DuckDB；缺数据返回明确错误，不在请求路径打外部 API（可用 `force_refresh`）。
+1. **历史数据本地优先**：日线 / 财务 / 股票列表默认只读 DuckDB；缺数据返回明确错误，不在请求路径打外部 API（可用 `force_refresh`）。
 2. **外部 API 只走 Sync Worker + 全局限速器**（`xshare/data/rate_limit.py`）。
 3. **水位 + 日历调度**：日线类任务交易日 16:00 触发一次，并用 watermark 补洞。
 
@@ -22,7 +22,6 @@ XShare 通过 SQLite `sync_config` + `sync_task_queue` 管理同步任务；覆�
 | `fund_daily` | 交易日 16:00 | Tushare `pro.fund_daily` | `fund_daily` | 按交易日批量；失败回退按 `etf_basic` |
 | `daily_basic` | 交易日 16:00 | Tushare | `stock_daily_basic` | 全市场 PE/PB |
 | `finance` | interval（默认周） | Tushare | `stock_finance` | 分片 + 水位断点 |
-| `fund_nav` | 交易日 16:00 | Tushare | `fund_nav` | 关注列表 / fund_basic |
 | `quote` | interval（默认 5 分钟，仅交易时段 09:25-11:35 / 12:55-15:10 入队） | AkShare 新浪 | `quote_snapshot` / `index_snapshot` / `sector_snapshot` | 实时行情快照；无需 `TUSHARE_TOKEN`；保留 `XSHARE_QUOTE_RETAIN_DAYS` 天 |
 
 ## 启动自检
@@ -32,7 +31,7 @@ XShare 通过 SQLite `sync_config` + `sync_task_queue` 管理同步任务；覆�
 1. 入队 `trade_cal`、`stock_basic`、`index_basic`、`etf_basic`
 2. 处于 16:00 窗口且对应日线表非空时，入队当日增量 `daily` / `index_daily` / `fund_daily` / `daily_basic`（`days=1`）
 3. **历史数据补全不再自动触发**：库空时日线类不入队 backfill，应由前端"一次性补全"接口（`start_date`/`end_date` + `overwrite`）显式触发
-4. 入队 `finance`；窗口内入队 `fund_nav`
+4. 入队 `finance`
 5. 入队 `news`
 6. 按 `XSHARE_SYNC_HISTORY_RETAIN_DAYS` 清理旧任务日志
 
@@ -65,7 +64,6 @@ XShare 通过 SQLite `sync_config` + `sync_task_queue` 管理同步任务；覆�
 | `XSHARE_TUSHARE_RATE_RETRIES` / `XSHARE_TUSHARE_RATE_COOLDOWN` | 5 / 65s | 遇「频率超限」冷却后重试 |
 | `XSHARE_SYNC_HISTORY_RETAIN_DAYS` | 30 | 任务日志保留天数 |
 | `XSHARE_FINANCE_SYNC_LIMIT` | 200 | 单次财务同步股票数 |
-| `XSHARE_FUND_NAV_SYNC_LIMIT` | 50 | 单次基金净值同步数 |
 
 ## 操作入口
 

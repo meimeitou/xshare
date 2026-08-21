@@ -167,7 +167,6 @@ make logs                    # 查看日志
 | `trade_cal` | `cal_date` | 交易日历 |
 | `sync_watermark` | `(dataset, key)` | 数据集同步水位 |
 | `news` | `id` (URL hash) | 新闻（按 publish_time 清理，保留可配天数） |
-| `fund_nav` | `(code, nav_date)` | 基金净值 |
 | `fund_basic` | `code` | 基金基本信息 |
 | `quote_snapshot` | `(code, ts)` | A 股个股实时快照（quote 任务，新浪源） |
 | `index_snapshot` | `(code, ts)` | 指数实时快照 |
@@ -187,13 +186,13 @@ make logs                    # 查看日志
 
 ## 同步系统
 
-1. **sync_config** — SQLite 配置；日历任务（daily/index_daily/fund_daily/daily_basic/fund_nav）交易日 16:00 触发；其余 interval
+1. **sync_config** — SQLite 配置；日历任务（daily/index_daily/fund_daily/daily_basic）交易日 16:00 触发；其余 interval
 2. **task_queue** — 异步队列 + 退避重试 + lease 僵尸回收
 3. **watermark / rate_limit** — DuckDB 水位 + 按源全局限速
 4. **sync_job** — MCP：`status`/`watermarks`/`config`/`enqueue`/`history`/`coverage`/`cancel`/`cleanup`
 5. **sync_runtime** — MCP 与 Web 共用 worker + 定时 loop
 
-任务类型：`news`、`stock_basic`、`index_basic`、`etf_basic`、`trade_cal`、`daily`、`index_daily`、`fund_daily`、`daily_basic`、`finance`、`fund_nav`、`quote`（交易时段 5 分钟行情快照）。详见 `docs/sync-management.md`。
+任务类型：`news`、`stock_basic`、`index_basic`、`etf_basic`、`trade_cal`、`daily`、`index_daily`、`fund_daily`、`daily_basic`、`finance`、`quote`（交易时段 5 分钟行情快照）。详见 `docs/sync-management.md`。
 
 ## 常见陷阱
 

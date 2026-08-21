@@ -180,6 +180,19 @@ def _score_mainline_from_db(sector_top_n: int, strong_limit: int) -> dict | None
     limit_latest = conn.execute(
         "SELECT MAX(trade_date) FROM limit_list"
     ).fetchone()[0]
+
+    # ponytail: limit_list 由 stock_daily 本地计算，若落后于 stock_daily 则在此即时补算。
+    # 调度器 16:00 并行入队时 limit_list 可能先于 daily 完成，导致读取到昨日数据。
+    # limit_list 不依赖外部 API，从 stock_daily 补算 < 0.1s，无需复杂依赖排序。
+    if limit_latest is None or str(limit_latest) < str(stock_daily_latest):
+        from xshare.data.sync_config import _compute_limit_list_local
+        _compute_limit_list_local(days=1)
+        limit_latest = conn.execute(
+            "SELECT MAX(trade_date) FROM limit_list"
+        ).fetchone()[0]
+        if limit_latest is not None and str(limit_latest) >= str(stock_daily_latest):
+            data_warnings.append("limit_list 即时补算完成")
+
     sector_mf_latest = conn.execute(
         "SELECT MAX(trade_date) FROM sector_moneyflow WHERE content_type = '概念'"
     ).fetchone()[0]

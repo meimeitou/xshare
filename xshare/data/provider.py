@@ -141,10 +141,6 @@ class DataProvider(ABC):
         """每日指标（PE/PB/换手率等）"""
         raise NotImplementedError
 
-    def get_fund_nav(self, code: str) -> pd.DataFrame:
-        """基金净值: code, nav_date, nav, daily_return"""
-        raise NotImplementedError
-
     def get_fund_basic(self, code: str) -> dict:
         """基金基本信息"""
         raise NotImplementedError
@@ -569,43 +565,6 @@ class ProviderManager:
         df.attrs["source"] = "cache"
         return df
 
-    def get_fund_nav(self, code: str, force_refresh: bool = False) -> pd.DataFrame:
-        """基金净值 — 本地优先。"""
-        conn = get_conn()
-        df = conn.execute(
-            "SELECT * FROM fund_nav WHERE code = ? ORDER BY nav_date",
-            [code],
-        ).fetchdf()
-
-        is_stale = False
-        as_of = None
-        if not df.empty:
-            latest = pd.to_datetime(df["nav_date"]).max().date()
-            as_of = latest.isoformat()
-            if (date.today() - latest).days > 1:
-                is_stale = True
-
-        if force_refresh:
-            try:
-                fresh = self._call_with_failover("get_fund_nav", code)
-                if not fresh.empty:
-                    self._upsert_fund_nav(conn, fresh)
-                    fresh.attrs["source"] = "api"
-                    fresh.attrs["is_stale"] = False
-                    return fresh
-            except DataFetchError:
-                if df.empty:
-                    raise
-
-        if df.empty:
-            raise DataFetchError(
-                f"本地无 {code} 基金净值，请先在 /sync 页面执行基金净值同步（或 force_refresh=True）"
-            )
-        df.attrs["source"] = "cache"
-        df.attrs["as_of"] = as_of
-        df.attrs["is_stale"] = is_stale
-        return df
-
     def get_fund_basic(self, code: str, force_refresh: bool = False) -> dict:
         """基金基本信息 — 本地优先。"""
         conn = get_conn()
@@ -827,15 +786,6 @@ class ProviderManager:
                     row.get("revenue_yoy"),
                     row.get("profit_yoy"),
                 ],
-            )
-
-    @staticmethod
-    def _upsert_fund_nav(conn, df: pd.DataFrame):
-        for _, row in df.iterrows():
-            conn.execute(
-                "INSERT INTO fund_nav (code, nav_date, nav) VALUES (?, ?, ?) "
-                "ON CONFLICT (code, nav_date) DO UPDATE SET nav=EXCLUDED.nav",
-                [row.get("code"), row.get("nav_date"), row.get("nav")],
             )
 
     @staticmethod

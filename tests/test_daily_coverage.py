@@ -47,6 +47,7 @@ def test_enqueue_initial_jobs_no_autobackfill_when_empty(monkeypatch, db_conn):
     daily_tasks = [t for t in tasks if t and t["task_type"] == "daily"]
     # 库空 -> 不入队 daily 任务
     assert len(daily_tasks) == 0
+    assert not any(t and t["task_type"] == "mainline" for t in tasks)
 
 
 # ── 个股覆盖维度 ─────────────────────────────────────────────────────────────

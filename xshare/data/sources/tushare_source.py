@@ -2009,85 +2009,6 @@ def sync_finance_to_db(limit: int | None = None, force: bool = False) -> int:
     return synced
 
 
-# ─── fund_nav ────────────────────────────────────────────────────────────────
-
-
-def sync_fund_nav_to_db(limit: int | None = None) -> int:
-    """同步 fund_basic / portfolio 中的基金净值。"""
-    from xshare.data.db import get_conn, init_tables
-
-    conn = get_conn()
-    init_tables(conn)
-    max_n = limit or int(os.environ.get("XSHARE_FUND_NAV_SYNC_LIMIT", "50") or "50")
-
-    codes = set()
-    for row in conn.execute("SELECT code FROM fund_basic").fetchall():
-        codes.add(row[0])
-    # portfolio 可能在 SQLite
-    try:
-        from xshare.data.sqlite_db import get_sqlite_conn
-        for row in get_sqlite_conn().execute(
-            "SELECT DISTINCT code FROM portfolio WHERE code LIKE '%.OF' OR code LIKE '%.SZ' OR code LIKE '%.SH'"
-        ).fetchall():
-            codes.add(row[0])
-    except Exception:
-        pass
-
-    if not codes:
-        _log_skip("fund_nav", "无 fund_basic/portfolio 基金代码")
-        return 0
-
-    synced = 0
-    rows_total = 0
-    _log_start("fund_nav", table="fund_nav", limit=max_n, candidates=len(codes))
-    for code in sorted(codes):
-        if synced >= max_n:
-            break
-        try:
-            df = _pro_call("fund_nav", ts_code=code)
-            if df is None or df.empty:
-                continue
-            df = df.rename(columns={"ts_code": "code", "nav_date": "nav_date", "unit_nav": "nav", "accum_nav": "acc_nav"})
-            if "nav" not in df.columns and "unit_nav" in df.columns:
-                df["nav"] = df["unit_nav"]
-            df["nav_date"] = pd.to_datetime(df["nav_date"]).dt.date
-            cols = [c for c in ("code", "nav_date", "nav", "acc_nav") if c in df.columns]
-            df_insert = df[cols].head(500)
-            conn.register("_fn_df", df_insert)
-            if "acc_nav" in df_insert.columns:
-                conn.execute(
-                    """
-                    INSERT INTO fund_nav (code, nav_date, nav, acc_nav)
-                    SELECT code, nav_date, nav, acc_nav FROM _fn_df
-                    ON CONFLICT (code, nav_date) DO UPDATE SET
-                        nav=EXCLUDED.nav, acc_nav=EXCLUDED.acc_nav
-                    """
-                )
-            else:
-                conn.execute(
-                    """
-                    INSERT INTO fund_nav (code, nav_date, nav)
-                    SELECT code, nav_date, nav FROM _fn_df
-                    ON CONFLICT (code, nav_date) DO UPDATE SET nav=EXCLUDED.nav
-                    """
-                )
-            conn.unregister("_fn_df")
-            wm.set_watermark(wm.DATASET_FUND_NAV, code, wm.STATUS_OK, len(df_insert))
-            synced += 1
-            rows_total += len(df_insert)
-            _log_progress(
-                "fund_nav", "%s 入库 %d 条 → fund_nav", code, len(df_insert),
-            )
-        except Exception as exc:
-            wm.set_watermark(wm.DATASET_FUND_NAV, code, wm.STATUS_ERROR, error=str(exc))
-            logger.warning("基金净值同步 %s 失败: %s", code, exc)
-    _log_done(
-        "fund_nav", "fund_nav", rows_total,
-        funds=synced, source="tushare.fund_nav",
-    )
-    return synced
-
-
 def fetch_daily_basic(code: str, trade_date: str = "") -> pd.DataFrame:
     """获取每日指标（PE/PB/换手率等）— 单票，经限速。"""
     kwargs = {"ts_code": code, "fields": "ts_code,trade_date,pe,pb,ps,total_mv,circ_mv,turnover_rate"}
@@ -2493,6 +2414,30 @@ def sync_concept_member_to_db(
                         "SELECT code FROM concept_board WHERE trade_date = ?", [d]
                     ).fetchall()
                 ]
+            if not codes:
+                # concept_board 可能因并行调度竞态尚未写入；先同步 concept_board 再重读。
+                _log_progress("concept_member", "%s concept_board 无数据，先同步 concept_board", iso)
+                try:
+                    sync_concept_board_to_db(trade_date=d.strftime("%Y%m%d"))
+                    codes = [
+                        r[0]
+                        for r in conn.execute(
+                            """
+                            SELECT code FROM concept_board
+                            WHERE trade_date = ?
+                            ORDER BY COALESCE(hot, 0) DESC, COALESCE(zt_num, 0) DESC
+                            LIMIT ?
+                            """,
+                            [d, top_n],
+                        ).fetchall()
+                    ] if top_n is not None else [
+                        r[0]
+                        for r in conn.execute(
+                            "SELECT code FROM concept_board WHERE trade_date = ?", [d]
+                        ).fetchall()
+                    ]
+                except Exception as cb_exc:
+                    _log_progress("concept_member", "%s concept_board 补同步失败: %s", iso, cb_exc)
             if not codes:
                 _log_progress("concept_member", "%s concept_board 无数据，跳过", iso)
                 wm.set_watermark(wm.DATASET_CONCEPT_MEMBER, d, wm.STATUS_ERROR, 0, "no concept_board")

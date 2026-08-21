@@ -411,6 +411,62 @@ async def test_run_job_daily_without_backfill_respects_window(monkeypatch, db_co
     assert result["status"] == "skipped"
 
 
+@pytest.mark.asyncio
+async def test_run_job_daily_start_date_skips_window(monkeypatch, db_conn):
+    from xshare.data.sync_config import init_sync_config
+    from xshare.data import sync_config
+
+    init_sync_config()
+    monkeypatch.setenv("TUSHARE_TOKEN", "fake")
+    monkeypatch.setattr(
+        sync_config, "_daily_sync_window_open", lambda now=None: False
+    )
+    handlers = dict(task_queue._BLOCKING_HANDLERS)
+    handlers["daily"] = lambda payload=None: 50
+    monkeypatch.setattr(task_queue, "_BLOCKING_HANDLERS", handlers)
+
+    result = await task_queue.run_job(
+        "daily", payload={"start_date": "2026-01-01", "end_date": "2026-01-31"}
+    )
+    assert result["status"] == "ok"
+    assert result["synced"] == 50
+
+
+@pytest.mark.asyncio
+async def test_run_job_limit_list_no_tushare_token(monkeypatch, db_conn):
+    from xshare.data.sync_config import init_sync_config
+
+    init_sync_config()
+    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+    monkeypatch.setattr(
+        task_queue, "_BLOCKING_HANDLERS",
+        {**task_queue._BLOCKING_HANDLERS, "limit_list": lambda payload=None: 3},
+    )
+    monkeypatch.setattr(
+        "xshare.data.sync_config._limit_list_after_daily_ready", lambda: True
+    )
+    result = await task_queue.run_job("limit_list")
+    assert result["status"] == "ok"
+    assert result["synced"] == 3
+
+
+@pytest.mark.asyncio
+async def test_run_job_calendar_empty_is_skipped(monkeypatch, db_conn):
+    from xshare.data.sync_config import init_sync_config
+    from xshare.data import sync_config
+
+    init_sync_config()
+    monkeypatch.setenv("TUSHARE_TOKEN", "fake")
+    monkeypatch.setattr(sync_config, "_daily_sync_window_open", lambda now=None: True)
+    monkeypatch.setattr(
+        task_queue, "_BLOCKING_HANDLERS",
+        {**task_queue._BLOCKING_HANDLERS, "concept_board": lambda payload=None: 0},
+    )
+    result = await task_queue.run_job("concept_board")
+    assert result["status"] == "skipped"
+    assert result["reason"] == "无数据"
+
+
 # ─── sync_job tool 集成 ──────────────────────────────────────────────────────
 
 

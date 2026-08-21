@@ -30,7 +30,7 @@
 - 实时类接口（行情、指数、涨跌统计、板块、成交额、涨跌幅榜）**仅 AkShare**，不因盘中/盘后切换，也不回退 Tushare。
 - 北向资金走 **Tushare** `moneyflow_hsgt`（日终数据，非盘中实时）；东财接口已停用。
 - AkShare 失败时：个股回退本地 `stock_daily`；大盘由工具层返回 `*_error`。
-- `daily` / `daily_basic` / `fund_nav` 定时任务仅在交易日 **16:00** 后执行。
+- `daily` / `daily_basic` 定时任务仅在交易日 **16:00** 后执行。
 - 历史类数据（日线/财务/基金/股票列表）默认 **local-first**：读路径不打外部 API。
 
 ### 1.1 为什么选择 nanobot
@@ -350,7 +350,6 @@ nanobot 内置定时任务能力，可用于：
 | 指数基础 / 日线 | Tushare（批量 sync） | DuckDB `index_basic` / `index_daily`；日历任务同股票日线 |
 | ETF 基础 / 日线 | Tushare（批量 sync） | DuckDB `etf_basic` / `fund_daily`；日历任务同股票日线 |
 | 每日指标 | Tushare（批量 sync） | DuckDB `stock_daily_basic` |
-| 基金净值 | Tushare / AkShare sync | DuckDB `fund_nav`；读路径 local-first |
 | 财务数据 | Tushare sync | DuckDB `stock_finance`；读路径 local-first |
 | 交易日历 | Tushare sync | DuckDB `trade_cal` |
 | 公告/新闻 | 同花顺 | DuckDB `news`，interval 定时拉取 |

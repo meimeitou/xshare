@@ -1,4 +1,7 @@
+import asyncio
 from datetime import datetime
+
+import pytest
 
 from xshare.data import sync_config
 
@@ -48,7 +51,7 @@ def test_get_all_includes_next_run_at_and_new_jobs(db_conn):
     assert "trade_cal" in names
     assert "daily_basic" in names
     assert "finance" in names
-    assert "fund_nav" in names
+    assert "fund_nav" not in names
     assert "index_basic" in names
     assert "index_daily" in names
     assert "etf_basic" in names
@@ -126,6 +129,54 @@ def test_try_enqueue_mainline_enqueues_when_deps_ready(db_conn, monkeypatch):
     args, kwargs = enqueued[0]
     assert args[0] == sync_config.MAINLINE_JOB
     assert kwargs.get("priority") == 3
+
+
+def test_calendar_window_bypassed_by_start_date(monkeypatch):
+    monkeypatch.setattr(sync_config, "_daily_sync_window_open", lambda now=None: False)
+    now = datetime(2026, 7, 20, 10, 0, 0)
+    eligible, reason = sync_config.check_calendar_window(
+        "daily", payload={"start_date": "2026-01-01", "end_date": "2026-07-01"}, now=now
+    )
+    assert eligible is True
+    assert reason == ""
+
+
+def test_limit_list_ready_outside_window(monkeypatch):
+    monkeypatch.setattr(sync_config, "_daily_sync_window_open", lambda now=None: False)
+    assert sync_config._limit_list_after_daily_ready() is True
+
+
+def test_limit_list_waits_for_same_day_daily(monkeypatch):
+    monkeypatch.setattr(sync_config, "_daily_sync_window_open", lambda now=None: True)
+    monkeypatch.setattr(sync_config, "_stock_daily_has_session_date", lambda session: False)
+    assert sync_config._limit_list_after_daily_ready() is False
+
+
+def test_mainline_deps_ready_without_limit_list(db_conn):
+    """limit_list 不是调度硬依赖。"""
+    db_conn.execute("INSERT INTO stock_daily (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
+    db_conn.execute("INSERT INTO concept_board (trade_date, code) VALUES ('2026-08-17', 'BK0001')")
+    db_conn.execute("INSERT INTO sector_moneyflow (trade_date, content_type, code) VALUES ('2026-08-17', '概念', 'BK0001')")
+    db_conn.execute("INSERT INTO stock_moneyflow (code, trade_date) VALUES ('000001.SZ', '2026-08-17')")
+    db_conn.execute("INSERT INTO concept_member (trade_date, code, concept_code) VALUES ('2026-08-17', '000001.SZ', 'BK0001')")
+    ready, target = sync_config._mainline_deps_ready()
+    assert ready is True
+    assert target == "2026-08-17"
+
+
+@pytest.mark.asyncio
+async def test_sync_loop_routes_mainline_to_calendar(monkeypatch, db_conn):
+    sync_config.init_sync_config()
+    called = []
+
+    async def fake(job, cfg):
+        called.append(job)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(sync_config, "_calendar_loop_iteration", fake)
+    with pytest.raises(asyncio.CancelledError):
+        await sync_config.sync_loop(sync_config.MAINLINE_JOB)
+    assert called == [sync_config.MAINLINE_JOB]
 
 
 def test_mainline_exempt_from_calendar_window():

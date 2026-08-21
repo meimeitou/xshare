@@ -256,12 +256,6 @@ class AkShareProvider(DataProvider):
         df.columns = ["code", "name"]
         return df
 
-    # ─── 基金净值 ────────────────────────────────────────────
-
-    def get_fund_nav(self, code: str) -> pd.DataFrame:
-        # fund_open_fund_info_em 为东财源，已停用；failover 到 Tushare。
-        raise DataFetchError("akshare 基金净值(东财)已停用，请使用 Tushare")
-
     # ─── 基金基本信息 ────────────────────────────────────────
 
     def get_fund_basic(self, code: str) -> dict:

@@ -29,7 +29,6 @@ FUND_DAILY_JOB = "fund_daily"
 TRADE_CAL_JOB = "trade_cal"
 DAILY_BASIC_JOB = "daily_basic"
 FINANCE_JOB = "finance"
-FUND_NAV_JOB = "fund_nav"
 QUOTE_JOB = "quote"
 MONEYFLOW_JOB = "moneyflow"
 SECTOR_MONEYFLOW_JOB = "sector_moneyflow"
@@ -50,7 +49,6 @@ ALL_JOBS = (
     TRADE_CAL_JOB,
     DAILY_BASIC_JOB,
     FINANCE_JOB,
-    FUND_NAV_JOB,
     MONEYFLOW_JOB,
     SECTOR_MONEYFLOW_JOB,
     MARKET_MONEYFLOW_JOB,
@@ -63,7 +61,7 @@ ALL_JOBS = (
 
 # 日历触发（非 interval）的任务：交易日 16:00 各入队一次
 CALENDAR_JOBS = frozenset({
-    DAILY_JOB, INDEX_DAILY_JOB, FUND_DAILY_JOB, DAILY_BASIC_JOB, FUND_NAV_JOB,
+    DAILY_JOB, INDEX_DAILY_JOB, FUND_DAILY_JOB, DAILY_BASIC_JOB,
     MONEYFLOW_JOB, SECTOR_MONEYFLOW_JOB, MARKET_MONEYFLOW_JOB,
     LIMIT_LIST_JOB, CONCEPT_BOARD_JOB, CONCEPT_MEMBER_JOB,
 })
@@ -153,13 +151,6 @@ JOB_META: dict[str, dict] = {
         "params_schema": {
             "limit": {"type": "integer", "default": 200, "description": "本次最多同步股票数"},
             "force": {"type": "boolean", "default": False, "description": "忽略 7 天水位"},
-        },
-    },
-    FUND_NAV_JOB: {
-        "label": "基金净值",
-        "description": "同步 fund_basic/持仓相关基金净值；交易日 16:00 触发",
-        "params_schema": {
-            "limit": {"type": "integer", "default": 50, "description": "本次最多同步基金数"},
         },
     },
     QUOTE_JOB: {
@@ -313,20 +304,25 @@ def _in_trading_hours(now: datetime | None = None) -> bool:
     return time(9, 25) <= t <= time(11, 35) or time(12, 55) <= t <= time(15, 10)
 
 
+# 区间补全 / 覆盖重拉 / 按年拉取：绕过交易日 16:00 窗口
+_WINDOW_BYPASS_KEYS = ("backfill", "start_date", "end_date", "overwrite", "years")
+
+
 def check_calendar_window(
     job: str, payload: dict | None = None, now: datetime | None = None
 ) -> tuple[bool, str]:
     """检查日历任务是否在可执行窗口内。
 
-    非日历任务、mainline（依赖就绪触发）、backfill 总是返回 ``(True, "")``。
+    非日历任务、mainline（依赖就绪触发）、补数 payload 总是返回 ``(True, "")``。
     供 ``run_job``（执行前）和 ``sync_loop``（入队前）共用，消除窗口判断重复。
 
     Returns:
         (eligible, reason) — eligible 为 False 时 reason 说明原因。
     """
-    if job not in CALENDAR_JOBS or job == MAINLINE_JOB:
+    if job not in CALENDAR_JOBS:
         return True, ""
-    if (payload or {}).get("backfill"):
+    p = payload or {}
+    if any(p.get(k) for k in _WINDOW_BYPASS_KEYS):
         return True, ""
     current = now or datetime.now()
     if not _daily_sync_window_open(current):
@@ -416,7 +412,6 @@ def init_sync_config() -> None:
         (TRADE_CAL_JOB, _env_int("XSHARE_TRADE_CAL_SYNC_INTERVAL", 10080)),  # 每周
         (DAILY_BASIC_JOB, _env_int("XSHARE_DAILY_BASIC_SYNC_INTERVAL", 1440)),
         (FINANCE_JOB, _env_int("XSHARE_FINANCE_SYNC_INTERVAL", 10080)),
-        (FUND_NAV_JOB, _env_int("XSHARE_FUND_NAV_SYNC_INTERVAL", 1440)),
         (MONEYFLOW_JOB, _env_int("XSHARE_MONEYFLOW_SYNC_INTERVAL", 1440)),
         (SECTOR_MONEYFLOW_JOB, _env_int("XSHARE_SECTOR_MONEYFLOW_SYNC_INTERVAL", 1440)),
         (MARKET_MONEYFLOW_JOB, _env_int("XSHARE_MARKET_MONEYFLOW_SYNC_INTERVAL", 1440)),
@@ -435,6 +430,11 @@ def init_sync_config() -> None:
             """,
             [job, interval],
         )
+    conn.execute("DELETE FROM sync_config WHERE job = ?", ["fund_nav"])
+    conn.execute(
+        "UPDATE sync_task_queue SET status='cancelled', finished_at=current_timestamp, "
+        "last_error='job removed' WHERE task_type='fund_nav' AND status IN ('queued','running')"
+    )
 
 
 def get_one(job: str) -> dict | None:
@@ -566,6 +566,12 @@ def _sync_daily_blocking(payload: dict | None = None) -> int:
             start_date=start_date, end_date=end_date,
             code=p.get("code"), overwrite=overwrite,
         )
+        days = int(p.get("days") or 1)
+        if count:
+            logger.info("日线行情已同步: %d 条（区间 %s..%s overwrite=%s）",
+                        count, start_date, end_date, overwrite)
+        else:
+            logger.info("日线行情无可同步数据（可能非交易日）")
     else:
         if p.get("years"):
             days = int(p["years"]) * 366
@@ -578,12 +584,8 @@ def _sync_daily_blocking(payload: dict | None = None) -> int:
             logger.info("日线行情已同步: %d 条（最近 %d 个交易日）", count, days)
         else:
             logger.info("日线行情无可同步数据（可能非交易日）")
-        return count
     if count:
-        logger.info("日线行情已同步: %d 条（区间 %s..%s overwrite=%s）",
-                    count, start_date, end_date, overwrite)
-    else:
-        logger.info("日线行情无可同步数据（可能非交易日）")
+        _enqueue_limit_list_after_daily(p, days=days)
     return count
 
 
@@ -722,17 +724,6 @@ def _sync_finance_blocking(payload: dict | None = None) -> int:
     force = bool(p.get("force"))
     count = sync_finance_to_db(limit=int(limit) if limit else None, force=force)
     logger.info("财务指标已同步: %d 只股票", count)
-    return count
-
-
-def _sync_fund_nav_blocking(payload: dict | None = None) -> int:
-    from xshare.data.sources.tushare_source import sync_fund_nav_to_db
-
-    if not os.environ.get("TUSHARE_TOKEN"):
-        return 0
-    limit = (payload or {}).get("limit")
-    count = sync_fund_nav_to_db(limit=int(limit) if limit else None)
-    logger.info("基金净值已同步: %d 只", count)
     return count
 
 
@@ -883,11 +874,14 @@ def _compute_limit_list_local(days: int = 1) -> int:
         [lookback, list(target_set)],
     ).fetchall()
 
+    from xshare.data import watermark as wm
     if not rows:
-        return 0
+        # 有日线但当日无涨停：算完成功，避免被当成空数据重试。
+        for d in target_set:
+            wm.set_watermark(wm.DATASET_LIMIT_LIST, d, wm.STATUS_OK, 0)
+        return len(target_set)
 
     # 写入 limit_list（仅 U 类型，先删旧 U 行再插入）
-    from xshare.data import watermark as wm
     fetched = 0
     for d in sorted(target_set, reverse=True):
         iso = d.isoformat() if hasattr(d, 'isoformat') else str(d)
@@ -913,14 +907,48 @@ def _compute_limit_list_local(days: int = 1) -> int:
         wm.set_watermark(wm.DATASET_LIMIT_LIST, d, wm.STATUS_OK, len(day_rows))
     return fetched
 
+def _stock_daily_has_session_date(session: date) -> bool:
+    from xshare.data.db import get_conn
+
+    row = get_conn().execute("SELECT MAX(trade_date) FROM stock_daily").fetchone()
+    latest = row[0] if row else None
+    if latest is None:
+        return False
+    latest_d = latest if hasattr(latest, "year") else date.fromisoformat(str(latest)[:10])
+    return latest_d >= session
+
+
+def _limit_list_after_daily_ready() -> bool:
+    """16:00 窗口内须等 stock_daily 含当日，避免用昨日行情算涨停后标 ok。"""
+    now = datetime.now()
+    if not _daily_sync_window_open(now):
+        return True
+    return _stock_daily_has_session_date(now.date())
+
+
+def _enqueue_limit_list_after_daily(payload: dict, days: int) -> None:
+    """daily 入库后再入队 limit_list，保证按当日 stock_daily 计算。"""
+    try:
+        from xshare.data.task_queue import enqueue
+
+        ll: dict = {"days": max(1, int(days))}
+        if payload.get("backfill") or payload.get("start_date") or payload.get("years"):
+            ll["backfill"] = True
+        enqueue(LIMIT_LIST_JOB, payload=ll, trigger="schedule", priority=4)
+    except Exception as exc:
+        logger.warning("daily 后入队 limit_list 失败: %s", exc)
+    _try_enqueue_mainline_if_ready()
+
+
 def _sync_limit_list_blocking(payload: dict | None = None) -> int:
     """从 stock_daily + stock_basic 本地计算涨跌停列表，写入 limit_list。
 
     不依赖 Tushare limit_list_d 接口（该接口通常比 daily 延迟 1-2 小时）。
     仅生成 limit_type='U'（涨停）行——mainline 只读 U 类型。
     """
-    from xshare.data.db import get_conn
-
+    if not _limit_list_after_daily_ready():
+        logger.info("涨跌停列表等待 stock_daily 当日数据")
+        return 0
     p = payload or {}
     days = int(p.get("days") or (_env_int("XSHARE_DAILY_BACKFILL_DAYS", 5) if p.get("backfill") else 1))
     count = _compute_limit_list_local(days=days)
@@ -961,6 +989,7 @@ def _sync_concept_member_blocking(payload: dict | None = None) -> int:
 
 # mainline 依赖表：这些表同步到同一交易日后，mainline 才有意义计算。
 # stock_daily 作为基准日期参照（最先入库）。
+# limit_list 由 stock_daily 本地计算，读路径可即时补算，不当调度硬依赖。
 _MAINLINE_DEP_TABLES = (
     ("concept_board", None),
     ("sector_moneyflow", "概念"),
@@ -1060,7 +1089,6 @@ _BLOCKING_HANDLERS = {
     TRADE_CAL_JOB: _sync_trade_cal_blocking,
     DAILY_BASIC_JOB: _sync_daily_basic_blocking,
     FINANCE_JOB: _sync_finance_blocking,
-    FUND_NAV_JOB: _sync_fund_nav_blocking,
     QUOTE_JOB: _sync_quote_blocking,
     MONEYFLOW_JOB: _sync_moneyflow_blocking,
     SECTOR_MONEYFLOW_JOB: _sync_sector_moneyflow_blocking,
@@ -1082,7 +1110,7 @@ async def sync_loop(job: str) -> None:
             await asyncio.sleep(_POLL_SECONDS)
             continue
 
-        if job in CALENDAR_JOBS:
+        if job in CALENDAR_JOBS or job == MAINLINE_JOB:
             await _calendar_loop_iteration(job, cfg)
         else:
             await _interval_loop_iteration(job, cfg)

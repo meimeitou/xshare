@@ -119,15 +119,6 @@ CREATE TABLE IF NOT EXISTS stock_finance (
     PRIMARY KEY (code, end_date)
 );
 
--- 基金净值
-CREATE TABLE IF NOT EXISTS fund_nav (
-    code        VARCHAR NOT NULL,
-    nav_date    DATE NOT NULL,
-    nav         DOUBLE,              -- 单位净值
-    acc_nav     DOUBLE,              -- 累计净值
-    PRIMARY KEY (code, nav_date)
-);
-
 -- 基金基本信息
 CREATE TABLE IF NOT EXISTS fund_basic (
     code        VARCHAR PRIMARY KEY,
@@ -223,7 +214,7 @@ UPDATE sync_watermark SET key_type = CASE
                      'moneyflow', 'sector_moneyflow', 'market_moneyflow',
                      'limit_list', 'concept_board', 'concept_member') THEN 'date'
     WHEN dataset IN ('stock_basic', 'index_basic', 'etf_basic', 'trade_cal', 'news') THEN 'all'
-    WHEN dataset IN ('finance', 'fund_nav') THEN 'code'
+    WHEN dataset IN ('finance') THEN 'code'
     ELSE NULL
 END WHERE key_type IS NULL;
 
@@ -235,6 +226,8 @@ DROP TABLE IF EXISTS sync_task_queue;
 DROP TABLE IF EXISTS portfolio;
 DROP SEQUENCE IF EXISTS portfolio_id_seq;
 DROP SEQUENCE IF EXISTS task_queue_id_seq;
+DROP TABLE IF EXISTS fund_nav;
+DELETE FROM sync_watermark WHERE dataset = 'fund_nav';
 
 -- 资产日线元数据（入库时增量维护，避免列表/覆盖率实时全表 GROUP BY）
 -- window_count / sufficient 基于"最近 252 交易日"窗口，次新按实际上市日折算。

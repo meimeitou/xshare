@@ -836,6 +836,7 @@ export default function SyncPage() {
         opts.start_date = backfillStart;
         opts.end_date = backfillEnd;
         opts.overwrite = backfillOverwrite;
+        opts.backfill = true;
       } else {
         opts.days = 252;
         opts.backfill = true;
